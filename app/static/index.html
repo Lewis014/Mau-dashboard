@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MAU — Leads Dashboard</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --blue: #2563eb; --blue-dark: #1d4ed8; --blue-light: #dbeafe;
+      --gray-50: #f8fafc; --gray-100: #f1f5f9; --gray-200: #e2e8f0;
+      --gray-500: #64748b; --gray-600: #475569; --gray-800: #1e293b;
+      --green: #16a34a; --green-light: #dcfce7;
+      --red: #dc2626; --red-light: #fee2e2;
+      --orange: #ea580c; --orange-light: #ffedd5;
+      --purple: #7c3aed; --purple-light: #ede9fe;
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--gray-50); color: var(--gray-800); min-height: 100vh; }
+
+    /* ── Header ── */
+    header { background: white; border-bottom: 1px solid var(--gray-200); padding: 0 24px; display: flex; align-items: center; justify-content: space-between; height: 56px; position: sticky; top: 0; z-index: 10; }
+    .logo { font-size: 17px; font-weight: 700; color: var(--blue); display: flex; align-items: center; gap: 8px; }
+    .logo-sub { color: var(--gray-500); font-weight: 400; font-size: 14px; }
+    .header-right { display: flex; align-items: center; gap: 10px; }
+    .btn-sm { border: 1px solid var(--gray-200); background: white; border-radius: 6px; padding: 5px 12px; font-size: 13px; cursor: pointer; color: var(--gray-600); }
+    .btn-sm:hover { background: var(--gray-50); }
+
+    /* ── Main ── */
+    main { max-width: 1440px; margin: 0 auto; padding: 20px 24px; }
+
+    /* ── Filters ── */
+    .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+    .toolbar label { font-size: 13px; font-weight: 600; color: var(--gray-600); white-space: nowrap; }
+    .toolbar select { border: 1px solid var(--gray-200); border-radius: 6px; padding: 7px 10px; font-size: 13px; color: var(--gray-800); background: white; cursor: pointer; }
+    .count { margin-left: auto; font-size: 13px; color: var(--gray-500); }
+
+    /* ── Table ── */
+    .card { background: white; border: 1px solid var(--gray-200); border-radius: 8px; overflow: hidden; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { background: var(--gray-50); border-bottom: 1px solid var(--gray-200); padding: 9px 14px; text-align: left; font-weight: 600; color: var(--gray-500); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; white-space: nowrap; }
+    td { padding: 11px 14px; border-bottom: 1px solid var(--gray-100); vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: var(--gray-50); }
+    .cell-muted { color: var(--gray-500); }
+
+    /* ── Badges ── */
+    .badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 20px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+    .badge-green  { background: var(--green-light); color: var(--green); }
+    .badge-gray   { background: var(--gray-100); color: var(--gray-600); }
+    .badge-blue   { background: var(--blue-light); color: var(--blue); }
+    .badge-orange { background: var(--orange-light); color: var(--orange); }
+    .badge-red    { background: var(--red-light); color: var(--red); }
+    .badge-purple { background: var(--purple-light); color: var(--purple); }
+
+    /* ── Score bar ── */
+    .score-wrap { display: flex; align-items: center; gap: 6px; }
+    .score-bar { width: 44px; height: 5px; background: var(--gray-200); border-radius: 3px; overflow: hidden; flex-shrink: 0; }
+    .score-fill { height: 100%; background: var(--blue); border-radius: 3px; }
+    .score-text { font-size: 12px; color: var(--gray-500); }
+
+    /* ── Outcome select ── */
+    .outcome-sel { border: 1px solid var(--gray-200); border-radius: 6px; padding: 4px 8px; font-size: 12px; cursor: pointer; background: white; max-width: 150px; }
+    .outcome-sel:focus { outline: 2px solid var(--blue); border-color: transparent; }
+
+    /* ── Brief button ── */
+    .btn-brief { background: var(--blue); color: white; border: none; border-radius: 6px; padding: 5px 12px; font-size: 12px; cursor: pointer; font-weight: 500; white-space: nowrap; }
+    .btn-brief:hover { background: var(--blue-dark); }
+    .btn-brief:disabled { background: var(--gray-200); color: var(--gray-500); cursor: not-allowed; }
+
+    /* ── Pagination ── */
+    .pagination { display: flex; justify-content: center; gap: 6px; margin-top: 16px; }
+    .btn-page { border: 1px solid var(--gray-200); background: white; border-radius: 6px; padding: 5px 12px; font-size: 13px; cursor: pointer; }
+    .btn-page:hover:not(:disabled) { background: var(--gray-50); }
+    .btn-page.active { background: var(--blue); color: white; border-color: var(--blue); }
+    .btn-page:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* ── Empty / Loading ── */
+    .empty-row td { text-align: center; padding: 48px; color: var(--gray-500); }
+    .spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid var(--gray-200); border-top-color: var(--blue); border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 6px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Modals ── */
+    .overlay { display: none; position: fixed; inset: 0; background: rgba(15,23,42,0.45); z-index: 50; align-items: center; justify-content: center; }
+    .overlay.open { display: flex; }
+    .modal { background: white; border-radius: 12px; padding: 28px; width: 90%; max-height: 82vh; overflow-y: auto; box-shadow: 0 24px 64px rgba(0,0,0,0.18); }
+    .modal-brief { max-width: 600px; }
+    .modal-auth  { max-width: 400px; }
+    .modal-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 18px; }
+    .modal-title { font-size: 17px; font-weight: 700; line-height: 1.3; }
+    .modal-close { background: none; border: none; font-size: 22px; cursor: pointer; color: var(--gray-500); line-height: 1; padding: 0 4px; }
+    .modal-close:hover { color: var(--gray-800); }
+    .modal-body { font-size: 14px; line-height: 1.75; color: var(--gray-800); white-space: pre-wrap; }
+    .modal-loading { text-align: center; padding: 36px 0; color: var(--gray-500); font-size: 14px; }
+
+    /* ── Auth form ── */
+    .auth-form { display: flex; flex-direction: column; gap: 14px; }
+    .auth-form p { font-size: 14px; color: var(--gray-600); margin-bottom: 4px; }
+    .auth-form label { font-size: 13px; font-weight: 600; color: var(--gray-700); }
+    .auth-form input { border: 1px solid var(--gray-200); border-radius: 7px; padding: 10px 14px; font-size: 14px; width: 100%; }
+    .auth-form input:focus { outline: 2px solid var(--blue); border-color: transparent; }
+    .btn-primary { background: var(--blue); color: white; border: none; border-radius: 7px; padding: 10px 20px; font-size: 14px; font-weight: 600; cursor: pointer; width: 100%; }
+    .btn-primary:hover { background: var(--blue-dark); }
+    .auth-error { font-size: 13px; color: var(--red); display: none; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">MAU <span class="logo-sub">Leads Dashboard</span></div>
+  <div class="header-right">
+    <button class="btn-sm" onclick="logout()">Cerrar sesión</button>
+  </div>
+</header>
+
+<main>
+  <div class="toolbar">
+    <label>Outcome:</label>
+    <select id="f-outcome" onchange="resetAndLoad()">
+      <option value="">Todos</option>
+      <option value="nuevo">Nuevo</option>
+      <option value="en_seguimiento">En seguimiento</option>
+      <option value="demo_agendada">Demo agendada</option>
+      <option value="trial_iniciado">Trial iniciado</option>
+      <option value="cliente">Cliente</option>
+      <option value="perdido">Perdido</option>
+    </select>
+    <label>Calificado:</label>
+    <select id="f-qualified" onchange="resetAndLoad()">
+      <option value="">Todos</option>
+      <option value="true">Sí</option>
+      <option value="false">No</option>
+    </select>
+    <span class="count" id="count-badge"></span>
+  </div>
+
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th>Teléfono</th>
+          <th>Nombre</th>
+          <th>Empresa</th>
+          <th>Score</th>
+          <th>Tipo Lead</th>
+          <th>Calificado</th>
+          <th>Outcome</th>
+          <th>Fecha</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="tbody">
+        <tr class="empty-row"><td colspan="9"><span class="spinner"></span>Cargando…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="pagination" id="pagination"></div>
+</main>
+
+<!-- Brief modal -->
+<div class="overlay" id="brief-overlay">
+  <div class="modal modal-brief">
+    <div class="modal-head">
+      <span class="modal-title" id="brief-title">Brief del lead</span>
+      <button class="modal-close" onclick="closeBrief()">×</button>
+    </div>
+    <div class="modal-body" id="brief-body"></div>
+  </div>
+</div>
+
+<!-- Auth modal -->
+<div class="overlay open" id="auth-overlay">
+  <div class="modal modal-auth">
+    <div class="modal-head">
+      <span class="modal-title">Acceso al Dashboard</span>
+    </div>
+    <form class="auth-form" onsubmit="doLogin(event)">
+      <p>Ingresa tu token de acceso para continuar.</p>
+      <div>
+        <label for="token-inp">Token</label>
+        <input type="password" id="token-inp" placeholder="••••••••••••••••" autocomplete="current-password" required>
+      </div>
+      <span class="auth-error" id="auth-err">Token incorrecto. Vuelve a intentarlo.</span>
+      <button type="submit" class="btn-primary">Ingresar</button>
+    </form>
+  </div>
+</div>
+
+<script>
+const PAGE = 50;
+let page = 0;
+
+const OUTCOME_LABELS = {
+  nuevo: 'Nuevo',
+  en_seguimiento: 'En seguimiento',
+  demo_agendada: 'Demo agendada',
+  trial_iniciado: 'Trial iniciado',
+  cliente: 'Cliente',
+  perdido: 'Perdido',
+};
+const OUTCOME_CLASS = {
+  nuevo: 'badge-gray',
+  en_seguimiento: 'badge-blue',
+  demo_agendada: 'badge-purple',
+  trial_iniciado: 'badge-orange',
+  cliente: 'badge-green',
+  perdido: 'badge-red',
+};
+
+function token() { return localStorage.getItem('mau_tk') || ''; }
+function logout() { localStorage.removeItem('mau_tk'); location.reload(); }
+
+function doLogin(e) {
+  e.preventDefault();
+  const val = document.getElementById('token-inp').value.trim();
+  if (!val) return;
+  localStorage.setItem('mau_tk', val);
+  document.getElementById('auth-overlay').classList.remove('open');
+  loadLeads();
+}
+
+async function api(method, path, body) {
+  const res = await fetch('/api' + path, {
+    method,
+    headers: { 'Authorization': 'Bearer ' + token(), 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (res.status === 401) {
+    document.getElementById('auth-err').style.display = 'block';
+    document.getElementById('auth-overlay').classList.add('open');
+    return null;
+  }
+  return res.json();
+}
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleDateString('es-PE', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+function outcomeOpts(current) {
+  return Object.entries(OUTCOME_LABELS).map(([v, l]) =>
+    `<option value="${v}" ${current === v ? 'selected' : ''}>${l}</option>`
+  ).join('');
+}
+
+function resetAndLoad() { page = 0; loadLeads(); }
+
+async function loadLeads() {
+  const outcome  = document.getElementById('f-outcome').value;
+  const qual     = document.getElementById('f-qualified').value;
+  const params   = new URLSearchParams({ limit: PAGE, offset: page * PAGE });
+  if (outcome) params.set('outcome', outcome);
+  if (qual)    params.set('qualified', qual);
+
+  const data = await api('GET', '/leads?' + params);
+  if (!data) return;
+
+  document.getElementById('count-badge').textContent = `${data.total} lead${data.total !== 1 ? 's' : ''}`;
+  renderRows(data.items);
+  renderPages(data.total);
+}
+
+function renderRows(leads) {
+  const tb = document.getElementById('tbody');
+  if (!leads.length) {
+    tb.innerHTML = '<tr class="empty-row"><td colspan="9">Sin leads para mostrar</td></tr>';
+    return;
+  }
+  tb.innerHTML = leads.map(l => {
+    const pct = l.score_max ? Math.round((l.score || 0) / l.score_max * 100) : 0;
+    const safeId = l.lead_id.replace(/'/g, "\\'");
+    const safeName = (l.contact_name || l.lead_id).replace(/'/g, "\\'");
+    return `<tr>
+      <td><code style="font-size:12px;color:var(--gray-600)">+${l.lead_id}</code></td>
+      <td>${l.contact_name || '<span class="cell-muted">—</span>'}</td>
+      <td>${l.company_name || '<span class="cell-muted">—</span>'}</td>
+      <td>
+        <div class="score-wrap">
+          <div class="score-bar"><div class="score-fill" style="width:${pct}%"></div></div>
+          <span class="score-text">${l.score ?? '—'}/${l.score_max ?? 6}</span>
+        </div>
+      </td>
+      <td>${l.tipo_lead ? `<span class="badge badge-blue">${l.tipo_lead}</span>` : '<span class="cell-muted">—</span>'}</td>
+      <td>${l.qualified ? '<span class="badge badge-green">Sí</span>' : '<span class="badge badge-gray">No</span>'}</td>
+      <td>
+        <select class="outcome-sel" onchange="setOutcome('${safeId}', this.value)">
+          ${outcomeOpts(l.outcome)}
+        </select>
+      </td>
+      <td class="cell-muted">${fmtDate(l.captured_at)}</td>
+      <td><button class="btn-brief" onclick="showBrief('${safeId}','${safeName}')">Brief</button></td>
+    </tr>`;
+  }).join('');
+}
+
+function renderPages(total) {
+  const pages = Math.ceil(total / PAGE);
+  const el = document.getElementById('pagination');
+  if (pages <= 1) { el.innerHTML = ''; return; }
+  let h = `<button class="btn-page" onclick="goPage(${page-1})" ${page===0?'disabled':''}>← Ant.</button>`;
+  const start = Math.max(0, page - 2), end = Math.min(pages, start + 5);
+  for (let i = start; i < end; i++)
+    h += `<button class="btn-page${i===page?' active':''}" onclick="goPage(${i})">${i+1}</button>`;
+  h += `<button class="btn-page" onclick="goPage(${page+1})" ${page>=pages-1?'disabled':''}>Sig. →</button>`;
+  el.innerHTML = h;
+}
+
+function goPage(p) { page = p; loadLeads(); window.scrollTo(0, 0); }
+
+async function setOutcome(leadId, outcome) {
+  await api('PATCH', `/leads/${leadId}/outcome`, { outcome });
+}
+
+async function showBrief(leadId, name) {
+  document.getElementById('brief-title').textContent = `Brief — ${name}`;
+  document.getElementById('brief-body').innerHTML = '<div class="modal-loading"><span class="spinner"></span>Generando con Claude Haiku…</div>';
+  document.getElementById('brief-overlay').classList.add('open');
+
+  const data = await api('POST', `/leads/${leadId}/brief`);
+  if (!data) return;
+  document.getElementById('brief-body').textContent = data.brief || 'No se pudo generar el brief.';
+}
+
+function closeBrief() { document.getElementById('brief-overlay').classList.remove('open'); }
+
+document.getElementById('brief-overlay').addEventListener('click', e => { if (e.target === e.currentTarget) closeBrief(); });
+
+// Init
+if (token()) {
+  document.getElementById('auth-overlay').classList.remove('open');
+  loadLeads();
+}
+</script>
+</body>
+</html>
