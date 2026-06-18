@@ -211,12 +211,18 @@ INSERT INTO leads_dataset (
     $17, $18, $19, $20, $21, $22, NOW()
 )
 ON CONFLICT (lead_id) DO UPDATE SET
-    session_id           = EXCLUDED.session_id,
-    contact_name         = EXCLUDED.contact_name,
-    email                = EXCLUDED.email,
-    company_name         = EXCLUDED.company_name,
-    tax_id               = EXCLUDED.tax_id,
-    industry             = EXCLUDED.industry,
+    -- Identidad y juicios del agente: el flujo n8n en vivo es autoritativo.
+    -- Solo rellenamos huecos; nunca pisamos un valor bueno con uno vacio/null.
+    session_id           = COALESCE(NULLIF(EXCLUDED.session_id, ''), leads_dataset.session_id),
+    contact_name         = COALESCE(NULLIF(EXCLUDED.contact_name, ''), leads_dataset.contact_name),
+    email                = COALESCE(NULLIF(EXCLUDED.email, ''), leads_dataset.email),
+    company_name         = COALESCE(NULLIF(EXCLUDED.company_name, ''), leads_dataset.company_name),
+    tax_id               = COALESCE(NULLIF(EXCLUDED.tax_id, ''), leads_dataset.tax_id),
+    industry             = COALESCE(NULLIF(EXCLUDED.industry, ''), leads_dataset.industry),
+    tipo_lead            = COALESCE(NULLIF(EXCLUDED.tipo_lead, ''), leads_dataset.tipo_lead),
+    ticket_estimado      = COALESCE(NULLIF(EXCLUDED.ticket_estimado, ''), leads_dataset.ticket_estimado),
+    qualified            = EXCLUDED.qualified OR COALESCE(leads_dataset.qualified, false),
+    -- Features analiticas nuevas: el backfill es la UNICA fuente -> sobrescribe.
     segmento             = EXCLUDED.segmento,
     num_rucs             = EXCLUDED.num_rucs,
     volumen_comprobantes = EXCLUDED.volumen_comprobantes,
@@ -226,14 +232,12 @@ ON CONFLICT (lead_id) DO UPDATE SET
     urgencia             = EXCLUDED.urgencia,
     pidio_demo           = EXCLUDED.pidio_demo,
     dolor_principal      = EXCLUDED.dolor_principal,
-    tipo_lead            = EXCLUDED.tipo_lead,
-    ticket_estimado      = EXCLUDED.ticket_estimado,
-    qualified            = EXCLUDED.qualified,
     message_count        = EXCLUDED.message_count,
-    canal                = EXCLUDED.canal,
+    canal                = COALESCE(NULLIF(EXCLUDED.canal, ''), leads_dataset.canal),
     is_test              = leads_dataset.is_test OR EXCLUDED.is_test,
     updated_at           = NOW()
--- NO se tocan: outcome, outcome_date, outcome_source, captured_at (etiquetas manuales)
+-- NO se tocan: outcome, outcome_date, outcome_source, captured_at (etiquetas manuales),
+-- ni las columnas del flujo n8n (interest, domain, score, meet_url, utm_*, job_title...).
 """
 
 
