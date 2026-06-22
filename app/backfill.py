@@ -29,6 +29,7 @@ Env relevante:
     CHATWOOT_HOST (default http://chatwoot_web:3000)
     CHATWOOT_ACCOUNT_ID (default 1), CHATWOOT_INBOX_ID (default 1)
     CHATWOOT_API_TOKEN                           -> token de acceso a la API de Chatwoot
+    CHATWOOT_BOT_AGENT_ID (opcional)             -> sender.id del bot; si no, se auto-detecta
 """
 
 import argparse
@@ -168,14 +169,16 @@ def cw_messages(conv_id: int) -> list[dict]:
     return msgs
 
 
-def transcript_from_chatwoot(messages: list[dict]) -> tuple[str, int, int]:
-    """Reconstruye (texto, total_mensajes, turnos_humanos_sustantivos) desde Chatwoot.
+def transcript_from_chatwoot(messages: list[dict], bot_id: Any) -> tuple[str, int, int, bool]:
+    """Reconstruye (texto, total_mensajes, turnos_humanos_sustantivos, hubo_humano).
 
-    message_type: 0=incoming(LEAD), 1=outgoing(BOT/AGENTE), 2=activity, 3=template.
-    Se omiten notas privadas (private=true) y mensajes de actividad/sistema.
+    message_type: 0=incoming(LEAD), 1=outgoing, 2=activity, 3=template.
+    El bot publica via una cuenta de agente (sender.id == bot_id). Cualquier otro
+    sender saliente es un AGENTE humano real. Se omiten notas privadas y actividad.
     """
     lines: list[str] = []
     total = substantive = 0
+    hubo_humano = False
     for m in sorted(messages, key=lambda x: x.get("id", 0)):
         if m.get("private"):
             continue
@@ -189,10 +192,14 @@ def transcript_from_chatwoot(messages: list[dict]) -> tuple[str, int, int]:
             if len(content) >= SUBSTANTIVE_MIN_CHARS:
                 substantive += 1
         else:
-            stype = ((m.get("sender") or {}).get("type") or "").lower()
-            speaker = "AGENTE" if stype in ("user", "agent") else "BOT"
+            sid = (m.get("sender") or {}).get("id")
+            if bot_id is not None and sid == bot_id:
+                speaker = "BOT"
+            else:
+                speaker = "AGENTE"
+                hubo_humano = True
         lines.append(f"{speaker}: {content}")
-    return "\n".join(lines), total, substantive
+    return "\n".join(lines), total, substantive, hubo_humano
 
 
 # ── Fuente n8n (fallback) ────────────────────────────────────────────────────
@@ -368,21 +375,39 @@ async def run_chatwoot(args, conn, client, c) -> None:
         if phone:
             by_phone.setdefault(phone, []).append(cv["id"])
 
+    # Pase 1: traer todos los mensajes y detectar al bot (sender saliente dominante).
+    msgs_by_phone: dict[str, list[dict]] = {}
+    tally: dict[Any, int] = {}
+    for phone, conv_ids in by_phone.items():
+        msgs: list[dict] = []
+        for cid in conv_ids:
+            try:
+                msgs += cw_messages(cid)
+            except Exception as e:  # noqa: BLE001
+                print(f"[warn] {phone}: fallo trayendo conv {cid} -> {e}")
+        msgs_by_phone[phone] = msgs
+        for m in msgs:
+            if m.get("message_type") == 1 and not m.get("private"):
+                sid = (m.get("sender") or {}).get("id")
+                if sid is not None:
+                    tally[sid] = tally.get(sid, 0) + 1
+
+    bot_id = os.getenv("CHATWOOT_BOT_AGENT_ID")
+    bot_id = int(bot_id) if bot_id else (max(tally, key=tally.get) if tally else None)
+
     print(f"Contactos (telefonos) en inbox {CHATWOOT_INBOX}: {len(by_phone)}  "
+          f"| bot sender.id detectado: {bot_id}  "
           f"(fuente=chatwoot, modelo={EXTRACT_MODEL}, dry_run={args.dry_run})\n")
 
-    for phone, conv_ids in by_phone.items():
+    # Pase 2: etiquetar (BOT vs AGENTE humano), extraer y upsert.
+    for phone, msgs in msgs_by_phone.items():
         if args.only_lead and phone != args.only_lead:
             continue
         if args.limit and c["ok"] >= args.limit:
             break
-        all_msgs: list[dict] = []
-        for cid in conv_ids:
-            try:
-                all_msgs += cw_messages(cid)
-            except Exception as e:  # noqa: BLE001
-                print(f"[warn] {phone}: fallo trayendo conv {cid} -> {e}")
-        transcript, total, substantive = transcript_from_chatwoot(all_msgs)
+        transcript, total, substantive, hubo_humano = transcript_from_chatwoot(msgs, bot_id)
+        if hubo_humano:
+            c["humano"] = c.get("humano", 0) + 1
         await process_one(args, conn, client, phone, transcript, total, substantive, c)
 
 
@@ -433,7 +458,9 @@ async def run(args: argparse.Namespace) -> None:
             for tl in TEST_LEADS:
                 await conn.execute("UPDATE leads_dataset SET is_test = true WHERE lead_id = $1", tl)
 
-        print(f"\nResumen: procesados={c['ok']}  saltados={c['skip']}  errores={c['err']}")
+        humano = c.get("humano", 0)
+        print(f"\nResumen: procesados={c['ok']}  saltados={c['skip']}  errores={c['err']}"
+              + (f"  | con intervencion humana={humano}" if args.source == "chatwoot" else ""))
     finally:
         await conn.close()
 
