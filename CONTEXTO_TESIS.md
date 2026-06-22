@@ -155,7 +155,25 @@ FROM leads_dataset WHERE is_test = false;
 5. **Dashboard v2:** agregar columna de **score** (cuando el modelo exista) + integrar la generación de briefs con la **KB de Qdrant** en vez del catálogo hardcodeado.
 6. **Documento de tesis — inconsistencias a resolver:** dos versiones del objetivo principal, dos definiciones de la variable dependiente, conflicto "exploratorio" vs otro tipo de investigación.
 7. **Defensa — interpretabilidad:** SHAP sobre componentes PCA no es interpretable → alternativa recomendada: **trayectoria de probabilidad por turno** de la conversación.
-8. **Confirmar** el encoder exacto que genera los embeddings de 3072 dims (dependencia de producción).
+8. ~~**Confirmar** el encoder exacto que genera los embeddings de 3072 dims.~~ ✅ **RESUELTO**: el proxy `saas-sales-conversations` trae `embedding_0..3071` precalculados → encoder = `text-embedding-3-large` (3072 dims). La validación real debe usar el MISMO encoder.
+
+### Progreso de entrenamiento (ml/Leads_Tesis.ipynb)
+- **Cambio de modelo (decisión metodológica):** se descartó XGBoost como modelo final. En embeddings densos la señal es linealmente separable y un **linear probe** transfiere mejor ante el cambio de dominio inglés→español (menos varianza, menos sobreajuste a quirks del proxy sintético). XGBoost ≈ 0.864 ≈ "embeddings solos" → no aporta sobre un lineal.
+- **Pipeline final:** `text-embedding-3-large` (3072) **L2-normalizado** → **regresión logística L2 calibrada** (`C` por CV). XGBoost y SVM lineal quedan como **baselines de comparación** en una tabla (LogReg/SVM/XGB × full-dim/PCA-100) que **justifica empíricamente** la elección. PCA pasa a ablación opcional, no obligatoria.
+- **Mejoras de rigor añadidas:** curva de calibración + Brier (score = probabilidad real, no ranking); **IC 95% bootstrap del AUC** (crítico por N real chico); **evaluación por prefijos + trayectoria de probabilidad por turno** (refleja despliegue real, resuelve que `full_text` "filtra" el cierre, y cubre interpretabilidad #7 sin SHAP-sobre-PCA).
+- **Resultado proxy previo (baseline XGBoost):** AUC 0.864 / AP 0.856 — confirma que el pipeline embeddings→clasificador aprende la conversión. La tabla comparativa del notebook nuevo fija cuál lineal gana.
+- **Pendiente para cerrar #4:** etiquetar `outcome` real (lista de convertidos vía HubSpot/Calendly/registro) y correr la sección 7 → AUC real con IC = métrica central.
+
+### Hallazgo crítico: sesgo de censura por atención humana (resuelto)
+- El flujo n8n muere en `Agent Assigned?` (output[0] vacío) cuando un humano toma la conversación (~20% de los casos). En ese estado **no corre el Upsert ni el Postgres Chat Memory** → lo que el lead dice durante atención humana **no se guarda en `leads_dataset` ni en `n8n_chat_histories`**. Solo vive en Chatwoot.
+- Sesgo serio: las conversaciones escaladas a humano suelen ser las más valiosas (las que convierten) → el dataset quedaba truncado justo en la clase positiva.
+- **Fix aplicado:** `backfill.py` ahora lee los transcripts **completos desde la API de Chatwoot** (`--source chatwoot`, default; lead+bot+agente), no de la memoria del bot. Guarda el transcript en la nueva columna `leads_dataset.transcript`, de la que la validación (notebook §7.1) toma el `full_text` → features y embeddings salen de la misma fuente completa.
+- Requiere: `ALTER TABLE leads_dataset ADD COLUMN transcript TEXT;` y `CHATWOOT_API_TOKEN` en el `.env`.
+- Consistencia con el proxy: el proxy embeddea la conversación completa (incluye turnos del vendedor), así que validar sobre el transcript completo es lo correcto. Puntuar solo la fase-bot (deployment real) queda como refinamiento/trabajo futuro.
+- Pendiente complementario (no urgente): captura incondicional en n8n (nodo antes de `Agent Assigned?`) para no perder mensajes hacia adelante.
+- Hallazgos del proxy: `outcome` (0/1) es el target de conversión; `customer_engagement`/`sales_effectiveness` confirmados como leakage (excluidos); `probability_trajectory` por turno disponible → base para interpretabilidad (pendiente #7).
+- Backfill ejecutado: 53 leads entrenables de 97 (44 basura con <2 turnos sustantivos). Cobertura: segmento 94%, dolor 83%, num_rucs 57%. Balance qualified ~2:1.
+- Pendiente para cerrar #4: etiquetar `outcome` real en el dashboard y correr la sección 7 del notebook.
 
 ---
 
