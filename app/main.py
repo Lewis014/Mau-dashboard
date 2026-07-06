@@ -63,10 +63,42 @@ ORDER_BY = {
 }
 
 
+@app.get("/api/stats")
+async def stats(_=Depends(check_auth)):
+    """KPIs para el dashboard: totales, calificados, clientes, prob promedio y conteo por outcome."""
+    pool = db.get_pool()
+    row = await pool.fetchrow(
+        """
+        SELECT
+          COUNT(*)                                            AS total,
+          COUNT(*) FILTER (WHERE qualified)                   AS calificados,
+          COUNT(*) FILTER (WHERE outcome = 'cliente')         AS clientes,
+          AVG(conversion_prob)                                AS prob_promedio,
+          COUNT(*) FILTER (WHERE conversion_prob IS NOT NULL) AS con_score,
+          COUNT(*) FILTER (WHERE transcript IS NOT NULL)      AS con_transcript
+        FROM leads_dataset
+        WHERE is_test = false
+        """
+    )
+    outcomes = await pool.fetch(
+        "SELECT outcome, COUNT(*) AS n FROM leads_dataset WHERE is_test = false GROUP BY outcome"
+    )
+    return {
+        "total": row["total"],
+        "calificados": row["calificados"],
+        "clientes": row["clientes"],
+        "prob_promedio": float(row["prob_promedio"]) if row["prob_promedio"] is not None else None,
+        "con_score": row["con_score"],
+        "con_transcript": row["con_transcript"],
+        "por_outcome": {r["outcome"]: r["n"] for r in outcomes},
+    }
+
+
 @app.get("/api/leads")
 async def list_leads(
     outcome: Optional[str] = Query(None),
     qualified: Optional[str] = Query(None),
+    has_transcript: Optional[str] = Query(None),
     sort: str = Query("recientes"),
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
@@ -82,6 +114,8 @@ async def list_leads(
     if qualified in ("true", "false"):
         conditions.append(f"qualified = ${len(args) + 1}")
         args.append(qualified == "true")
+    if has_transcript == "true":
+        conditions.append("transcript IS NOT NULL")
 
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     order_by = ORDER_BY.get(sort, ORDER_BY["recientes"])
