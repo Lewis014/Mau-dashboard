@@ -152,7 +152,7 @@ FROM leads_dataset WHERE is_test = false;
 2. **Definir y cablear el `outcome`:** cómo se sabe quién convirtió — Calendly (demo agendada), registro en `bot.contatech.lat` (trial), o stage del Deal en HubSpot. Hoy se etiqueta **manualmente** desde el dashboard; evaluar wiring automático.
 3. **Etiquetar** outcomes (los 97 + leads nuevos) hasta juntar dataset entrenable. Resolver censura (no tratar `en_seguimiento` como negativo).
 4. **Entrenar el modelo:** embeddings multilingües sobre el proxy sintético → transferir → validar en los reales etiquetados. Objetivo AUC > 0.65–0.70.
-5. **Dashboard v2:** agregar columna de **score** (cuando el modelo exista) + integrar la generación de briefs con la **KB de Qdrant** en vez del catálogo hardcodeado.
+5. ~~**Dashboard v2:** agregar columna de **score**.~~ ✅ **HECHO**: scoring en vivo cableado (ver "Scoring en producción" abajo). Falta solo la validación real (bloqueada por #3). Integrar briefs con KB de Qdrant queda diferido (hoy plantilla).
 6. **Documento de tesis — inconsistencias a resolver:** dos versiones del objetivo principal, dos definiciones de la variable dependiente, conflicto "exploratorio" vs otro tipo de investigación.
 7. **Defensa — interpretabilidad:** SHAP sobre componentes PCA no es interpretable → alternativa recomendada: **trayectoria de probabilidad por turno** de la conversación.
 8. ~~**Confirmar** el encoder exacto que genera los embeddings de 3072 dims.~~ ✅ **RESUELTO**: el proxy `saas-sales-conversations` trae `embedding_0..3071` precalculados → encoder = `text-embedding-3-large` (3072 dims). La validación real debe usar el MISMO encoder.
@@ -163,6 +163,15 @@ FROM leads_dataset WHERE is_test = false;
 - **Mejoras de rigor añadidas:** curva de calibración + Brier (score = probabilidad real, no ranking); **IC 95% bootstrap del AUC** (crítico por N real chico); **evaluación por prefijos + trayectoria de probabilidad por turno** (refleja despliegue real, resuelve que `full_text` "filtra" el cierre, y cubre interpretabilidad #7 sin SHAP-sobre-PCA).
 - **Resultado proxy previo (baseline XGBoost):** AUC 0.864 / AP 0.856 — confirma que el pipeline embeddings→clasificador aprende la conversión. La tabla comparativa del notebook nuevo fija cuál lineal gana.
 - **Pendiente para cerrar #4:** etiquetar `outcome` real (lista de convertidos vía HubSpot/Calendly/registro) y correr la sección 7 → AUC real con IC = métrica central.
+
+### Scoring en producción (cableado)
+- **Modelo portable:** la sección 6 del notebook exporta `leads_model.json` (coeficientes de la LogReg + metadatos). El dashboard puntúa en **Python puro** (`sigmoid(w·x + b)`), sin sklearn → evita acoplar versiones (Colab 1.6.1 vs contenedor) y dependencias pesadas. Reproduce `predict_proba` con diff ~1e-16.
+- **`app/scoring.py`:** `score_text(transcript)` → OpenAI `text-embedding-3-large` (3072d) → L2-normalize → prob. Env: `OPENAI_API_KEY`, `MODEL_PATH` (default `/models/leads_model.json`, montado como volumen `./models:ro`), `EMBED_MODEL`.
+- **`app/score_leads.py`:** batch que crea la columna `leads_dataset.conversion_prob` (real) y puntúa los leads con transcript. `python -m app.score_leads` (solo faltantes) · `--all` · `--only-lead` · `--dry-run`.
+- **API:** `POST /api/leads/{id}/score` puntúa un lead on-demand; `GET /api/leads?sort=score` ordena por `conversion_prob DESC`.
+- **Dashboard:** columna **P(conv.)** con barra + % (verde ≥60, ámbar ≥30, gris), botón "Calcular" por lead, y orden "Prob. conversión".
+- **Despliegue:** copiar `leads_model.json` a `mau-dashboard/models/` en el servidor, `OPENAI_API_KEY` en `.env`, `docker compose up -d --build`, luego `docker compose exec dashboard python -m app.score_leads`.
+- **CAVEAT:** el modelo está entrenado en el proxy (inglés) y **aún no validado** en los reales (español). El score es utilizable pero su calidad se confirma con la sección 7 una vez existan las etiquetas.
 
 ### Hallazgo crítico: sesgo de censura por atención humana (resuelto)
 - El flujo n8n muere en `Agent Assigned?` (output[0] vacío) cuando un humano toma la conversación (~20% de los casos). En ese estado **no corre el Upsert ni el Postgres Chat Memory** → lo que el lead dice durante atención humana **no se guarda en `leads_dataset` ni en `n8n_chat_histories`**. Solo vive en Chatwoot.

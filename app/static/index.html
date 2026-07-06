@@ -130,6 +130,11 @@
       <option value="true">Sí</option>
       <option value="false">No</option>
     </select>
+    <label>Ordenar:</label>
+    <select id="f-sort" onchange="resetAndLoad()">
+      <option value="recientes">Recientes</option>
+      <option value="score">Prob. conversión</option>
+    </select>
     <span class="count" id="count-badge"></span>
   </div>
 
@@ -141,6 +146,7 @@
           <th>Nombre</th>
           <th>Empresa</th>
           <th>Score</th>
+          <th>P(conv.)</th>
           <th>Tipo Lead</th>
           <th>Calificado</th>
           <th>Outcome</th>
@@ -149,7 +155,7 @@
         </tr>
       </thead>
       <tbody id="tbody">
-        <tr class="empty-row"><td colspan="9"><span class="spinner"></span>Cargando…</td></tr>
+        <tr class="empty-row"><td colspan="10"><span class="spinner"></span>Cargando…</td></tr>
       </tbody>
     </table>
   </div>
@@ -249,9 +255,11 @@ function resetAndLoad() { page = 0; loadLeads(); }
 async function loadLeads() {
   const outcome  = document.getElementById('f-outcome').value;
   const qual     = document.getElementById('f-qualified').value;
+  const sort     = document.getElementById('f-sort').value;
   const params   = new URLSearchParams({ limit: PAGE, offset: page * PAGE });
   if (outcome) params.set('outcome', outcome);
   if (qual)    params.set('qualified', qual);
+  if (sort)    params.set('sort', sort);
 
   const data = await api('GET', '/leads?' + params);
   if (!data) return;
@@ -264,13 +272,20 @@ async function loadLeads() {
 function renderRows(leads) {
   const tb = document.getElementById('tbody');
   if (!leads.length) {
-    tb.innerHTML = '<tr class="empty-row"><td colspan="9">Sin leads para mostrar</td></tr>';
+    tb.innerHTML = '<tr class="empty-row"><td colspan="10">Sin leads para mostrar</td></tr>';
     return;
   }
   tb.innerHTML = leads.map(l => {
     const pct = l.score_max ? Math.round((l.score || 0) / l.score_max * 100) : 0;
     const safeId = l.lead_id.replace(/'/g, "\\'");
     const safeName = (l.contact_name || l.lead_id).replace(/'/g, "\\'");
+    const prob = (l.conversion_prob != null) ? Math.round(l.conversion_prob * 100) : null;
+    const probCell = (prob != null)
+      ? `<div class="score-wrap">
+          <div class="score-bar"><div class="score-fill" style="width:${prob}%;background:${probColor(prob)}"></div></div>
+          <span class="score-text">${prob}%</span>
+        </div>`
+      : `<button class="btn-sm" onclick="scoreLead('${safeId}', this)">Calcular</button>`;
     return `<tr>
       <td><code style="font-size:12px;color:var(--gray-600)">+${l.lead_id}</code></td>
       <td>${l.contact_name || '<span class="cell-muted">—</span>'}</td>
@@ -281,6 +296,7 @@ function renderRows(leads) {
           <span class="score-text">${l.score ?? '—'}/${l.score_max ?? 6}</span>
         </div>
       </td>
+      <td>${probCell}</td>
       <td>${l.tipo_lead ? `<span class="badge badge-blue">${l.tipo_lead}</span>` : '<span class="cell-muted">—</span>'}</td>
       <td>${l.qualified ? '<span class="badge badge-green">Sí</span>' : '<span class="badge badge-gray">No</span>'}</td>
       <td>
@@ -312,9 +328,22 @@ async function setOutcome(leadId, outcome) {
   await api('PATCH', `/leads/${leadId}/outcome`, { outcome });
 }
 
+function probColor(pct) {
+  if (pct >= 60) return 'var(--green, #16a34a)';
+  if (pct >= 30) return 'var(--amber, #d97706)';
+  return 'var(--gray-400, #9ca3af)';
+}
+
+async function scoreLead(leadId, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  const data = await api('POST', `/leads/${leadId}/score`);
+  if (data) loadLeads();
+  else if (btn) { btn.disabled = false; btn.textContent = 'Calcular'; }
+}
+
 async function showBrief(leadId, name) {
   document.getElementById('brief-title').textContent = `Brief — ${name}`;
-  document.getElementById('brief-body').innerHTML = '<div class="modal-loading"><span class="spinner"></span>Generando con Claude Haiku…</div>';
+  document.getElementById('brief-body').innerHTML = '<div class="modal-loading"><span class="spinner"></span>Generando brief…</div>';
   document.getElementById('brief-overlay').classList.add('open');
 
   const data = await api('POST', `/leads/${leadId}/brief`);
