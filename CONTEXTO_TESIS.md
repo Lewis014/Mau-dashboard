@@ -123,7 +123,9 @@ mau-dashboard/
     │                       #   (Claude tool-use / JSON forzado, default claude-sonnet-4-6,
     │                       #    anti-alucinacion num_rucs/volumen, filtro <2 turnos sustantivos,
     │                       #    preserva outcome/is_test en el upsert)
-    └── static/index.html   # Vue 3 (CDN), tabla + dropdown outcome + modal brief
+    └── static/index.html   # SPA vanilla JS con hash-routing y sidebar: Dashboard (KPIs via
+                            #   GET /api/stats), Leads (tabla), Detalle de lead (features +
+                            #   transcript + brief + score) y Etiquetado (cola outcome=nuevo)
 ```
 
 ### Comandos
