@@ -337,6 +337,9 @@ async def upsert_lead(conn: asyncpg.Connection, lead_id: str, session_id: str,
 
 async def process_one(args, conn, client, lead_id, transcript, total, substantive, c) -> None:
     session_id = SESSION_PREFIX + lead_id
+    if getattr(args, "skip_existing", False) and lead_id in args._existing:
+        c["exist"] = c.get("exist", 0) + 1
+        return
     if substantive < MIN_SUBSTANTIVE_HUMAN_TURNS:
         print(f"[skip] {lead_id}: {substantive} turnos humanos sustantivos (< {MIN_SUBSTANTIVE_HUMAN_TURNS})")
         c["skip"] += 1
@@ -448,6 +451,16 @@ async def run(args: argparse.Namespace) -> None:
     )
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
     c = {"ok": 0, "skip": 0, "err": 0}
+
+    # --skip-existing: omite leads que ya tienen transcript (evita re-llamar a Claude).
+    args._existing = set()
+    if args.skip_existing:
+        rows = await conn.fetch(
+            "SELECT lead_id FROM leads_dataset WHERE transcript IS NOT NULL AND length(transcript) > 0"
+        )
+        args._existing = {r["lead_id"] for r in rows}
+        print(f"skip-existing: {len(args._existing)} leads ya tienen transcript, se omitiran.\n")
+
     try:
         if args.source == "chatwoot":
             await run_chatwoot(args, conn, client, c)
@@ -459,7 +472,9 @@ async def run(args: argparse.Namespace) -> None:
                 await conn.execute("UPDATE leads_dataset SET is_test = true WHERE lead_id = $1", tl)
 
         humano = c.get("humano", 0)
+        exist = c.get("exist", 0)
         print(f"\nResumen: procesados={c['ok']}  saltados={c['skip']}  errores={c['err']}"
+              + (f"  ya-existentes={exist}" if args.skip_existing else "")
               + (f"  | con intervencion humana={humano}" if args.source == "chatwoot" else ""))
     finally:
         await conn.close()
@@ -472,6 +487,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dry-run", action="store_true", help="No escribe en DB; imprime lo que extraeria.")
     p.add_argument("--limit", type=int, default=0, help="Procesa como maximo N leads (0 = todos).")
     p.add_argument("--only-lead", type=str, default=None, help="Procesa solo este telefono (lead_id).")
+    p.add_argument("--skip-existing", action="store_true",
+                   help="Omite leads que ya tienen transcript (solo procesa los nuevos; ahorra llamadas a Claude).")
     return p.parse_args()
 
 

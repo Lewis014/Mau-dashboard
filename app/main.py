@@ -95,7 +95,15 @@ async def list_leads(
         offset,
     )
 
-    return {"total": total, "items": [db.row_to_dict(r) for r in rows]}
+    items = []
+    for r in rows:
+        d = db.row_to_dict(r)
+        # No mandamos el transcript completo al navegador; solo si existe (para decidir si es puntuable).
+        d["has_transcript"] = bool(d.get("transcript"))
+        d.pop("transcript", None)
+        items.append(d)
+
+    return {"total": total, "items": items}
 
 
 @app.get("/api/leads/{lead_id}")

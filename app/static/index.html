@@ -280,12 +280,17 @@ function renderRows(leads) {
     const safeId = l.lead_id.replace(/'/g, "\\'");
     const safeName = (l.contact_name || l.lead_id).replace(/'/g, "\\'");
     const prob = (l.conversion_prob != null) ? Math.round(l.conversion_prob * 100) : null;
-    const probCell = (prob != null)
-      ? `<div class="score-wrap">
+    let probCell;
+    if (prob != null) {
+      probCell = `<div class="score-wrap">
           <div class="score-bar"><div class="score-fill" style="width:${prob}%;background:${probColor(prob)}"></div></div>
           <span class="score-text">${prob}%</span>
-        </div>`
-      : `<button class="btn-sm" onclick="scoreLead('${safeId}', this)">Calcular</button>`;
+        </div>`;
+    } else if (l.has_transcript) {
+      probCell = `<button class="btn-sm" onclick="scoreLead('${safeId}', this)">Calcular</button>`;
+    } else {
+      probCell = `<span class="cell-muted" title="Sin conversación suficiente para puntuar">—</span>`;
+    }
     return `<tr>
       <td><code style="font-size:12px;color:var(--gray-600)">+${l.lead_id}</code></td>
       <td>${l.contact_name || '<span class="cell-muted">—</span>'}</td>
