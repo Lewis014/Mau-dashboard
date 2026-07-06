@@ -161,6 +161,30 @@
     .modal-body { font-size: 14px; line-height: 1.75; color: var(--gray-800); white-space: pre-wrap; }
     .modal-loading { text-align: center; padding: 36px 0; color: var(--gray-500); font-size: 14px; }
 
+    /* ── Brief document ── */
+    .brief-doc { font-size: 13.5px; line-height: 1.6; color: var(--gray-800); }
+    .bd-head { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid var(--brand); padding-bottom: 14px; margin-bottom: 18px; }
+    .bd-brand b { font-family: Georgia, 'Times New Roman', serif; font-size: 20px; color: var(--brand); }
+    .bd-brand div { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--gray-500); }
+    .bd-meta { text-align: right; font-size: 12px; color: var(--gray-500); }
+    .bd-title { font-size: 19px; font-weight: 800; margin-bottom: 4px; }
+    .bd-sub { font-size: 12.5px; color: var(--gray-500); margin-bottom: 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .bd-section { margin-bottom: 16px; }
+    .bd-section h4 { font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--brand); border-bottom: 1px solid var(--gray-200); padding-bottom: 4px; margin-bottom: 8px; }
+    .bd-kv { display: grid; grid-template-columns: 170px 1fr; gap: 4px 12px; font-size: 13px; }
+    .bd-kv b { color: var(--gray-500); font-weight: 600; }
+    .bd-mod { padding: 8px 12px; background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: 8px; margin-bottom: 6px; }
+    .bd-mod b { color: var(--brand); }
+    .bd-next { background: var(--brand-light); border: 1px solid var(--brand); border-radius: 8px; padding: 12px 16px; font-size: 13.5px; }
+    .bd-next a { color: var(--brand); font-weight: 600; word-break: break-all; }
+    .bd-foot { margin-top: 18px; padding-top: 10px; border-top: 1px solid var(--gray-200); font-size: 11px; color: var(--gray-400); }
+    @media print {
+      body * { visibility: hidden; }
+      #brief-doc, #brief-doc * { visibility: visible; }
+      #brief-doc { position: absolute; left: 0; top: 0; width: 100%; padding: 24px; }
+      .no-print { display: none !important; }
+    }
+
     /* ── Auth form ── */
     .auth-form { display: flex; flex-direction: column; gap: 14px; }
     .auth-form p { font-size: 14px; color: var(--gray-600); margin-bottom: 4px; }
@@ -281,11 +305,14 @@
 <!-- Brief modal -->
 <div class="overlay" id="brief-overlay">
   <div class="modal modal-brief">
-    <div class="modal-head">
-      <span class="modal-title" id="brief-title">Brief del lead</span>
-      <button class="modal-close" onclick="closeBrief()">×</button>
+    <div class="modal-head no-print">
+      <span class="modal-title">Brief de venta</span>
+      <div style="display:flex;gap:10px;align-items:center">
+        <button class="btn-brief" id="brief-pdf-btn" style="display:none" onclick="window.print()">Exportar PDF</button>
+        <button class="modal-close" onclick="closeBrief()">×</button>
+      </div>
     </div>
-    <div class="modal-body" id="brief-body"></div>
+    <div id="brief-body"></div>
   </div>
 </div>
 
@@ -296,13 +323,17 @@
       <span class="modal-title">Acceso al Dashboard</span>
     </div>
     <form class="auth-form" onsubmit="doLogin(event)">
-      <p>Ingresa tu token de acceso para continuar.</p>
+      <p>Inicia sesión para continuar.</p>
       <div>
-        <label for="token-inp">Token</label>
-        <input type="password" id="token-inp" placeholder="••••••••••••••••" autocomplete="current-password" required>
+        <label for="user-inp">Usuario</label>
+        <input type="text" id="user-inp" placeholder="admin" autocomplete="username" required>
       </div>
-      <span class="auth-error" id="auth-err">Token incorrecto. Vuelve a intentarlo.</span>
-      <button type="submit" class="btn-primary">Ingresar</button>
+      <div>
+        <label for="pass-inp">Contraseña</label>
+        <input type="password" id="pass-inp" placeholder="••••••••••••" autocomplete="current-password" required>
+      </div>
+      <span class="auth-error" id="auth-err">Credenciales incorrectas. Vuelve a intentarlo.</span>
+      <button type="submit" class="btn-primary" id="login-btn">Ingresar</button>
     </form>
   </div>
 </div>
@@ -337,13 +368,33 @@ function esc(s) {
 function token() { return localStorage.getItem('mau_tk') || ''; }
 function logout() { localStorage.removeItem('mau_tk'); location.reload(); }
 
-function doLogin(e) {
+async function doLogin(e) {
   e.preventDefault();
-  const val = document.getElementById('token-inp').value.trim();
-  if (!val) return;
-  localStorage.setItem('mau_tk', val);
-  document.getElementById('auth-overlay').classList.remove('open');
-  route();
+  const username = document.getElementById('user-inp').value.trim();
+  const password = document.getElementById('pass-inp').value;
+  if (!username || !password) return;
+  const btn = document.getElementById('login-btn');
+  btn.disabled = true; btn.textContent = 'Ingresando…';
+  try {
+    const res = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.token) {
+      const err = document.getElementById('auth-err');
+      err.textContent = data.detail || 'Credenciales incorrectas. Vuelve a intentarlo.';
+      err.style.display = 'block';
+      return;
+    }
+    localStorage.setItem('mau_tk', data.token);
+    document.getElementById('auth-err').style.display = 'none';
+    document.getElementById('auth-overlay').classList.remove('open');
+    route();
+  } finally {
+    btn.disabled = false; btn.textContent = 'Ingresar';
+  }
 }
 
 async function api(method, path, body) {
@@ -353,7 +404,10 @@ async function api(method, path, body) {
     body: body ? JSON.stringify(body) : undefined,
   });
   if (res.status === 401) {
-    document.getElementById('auth-err').style.display = 'block';
+    localStorage.removeItem('mau_tk');
+    const err = document.getElementById('auth-err');
+    err.textContent = 'Tu sesión expiró. Vuelve a iniciar sesión.';
+    err.style.display = 'block';
     document.getElementById('auth-overlay').classList.add('open');
     return null;
   }
@@ -494,7 +548,7 @@ function renderRows(leads) {
         </select>
       </td>
       <td class="cell-muted">${fmtDate(l.captured_at)}</td>
-      <td><button class="btn-brief" onclick="event.stopPropagation();showBrief('${id}','${esc(l.contact_name || l.lead_id)}')">Brief</button></td>
+      <td><button class="btn-brief" onclick="event.stopPropagation();showBrief('${id}')">Brief</button></td>
     </tr>`;
   }).join('');
 }
@@ -620,8 +674,8 @@ async function loadDetail(leadId) {
           <div class="field"><b>Módulos de interés</b><span>${modulos}</span></div>
         </div>
         <div class="panel">
-          <div class="panel-title">Brief <button class="btn-brief" onclick="loadBriefInline('${esc(l.lead_id)}')">Generar</button></div>
-          <div class="brief-box" id="brief-inline"><span class="cell-muted">Genera el brief de venta para este lead.</span></div>
+          <div class="panel-title">Brief <button class="btn-brief" onclick="showBrief('${esc(l.lead_id)}')">Generar documento</button></div>
+          <span class="cell-muted" style="font-size:13px">Genera el brief de venta estructurado, listo para exportar a PDF.</span>
         </div>
       </div>
       <div class="panel">
@@ -650,13 +704,6 @@ async function scoreDetail(leadId, btn) {
   const data = await api('POST', `/leads/${leadId}/score`);
   if (data && !data.detail) loadDetail(leadId);
   else if (btn) { btn.disabled = false; btn.textContent = 'Calcular score'; }
-}
-
-async function loadBriefInline(leadId) {
-  const el = document.getElementById('brief-inline');
-  el.innerHTML = '<span class="spinner"></span>Generando…';
-  const data = await api('POST', `/leads/${leadId}/brief`);
-  el.textContent = (data && data.brief) || 'No se pudo generar el brief.';
 }
 
 /* ══════════ Etiquetado ══════════ */
@@ -704,14 +751,58 @@ async function loadTagPanel(leadId) {
     <div class="outcome-btns">${outcomeBtns(l.lead_id, l.outcome, 'tag')}</div>`;
 }
 
-/* ══════════ Brief modal (desde tabla) ══════════ */
-async function showBrief(leadId, name) {
-  document.getElementById('brief-title').textContent = `Brief — ${name}`;
+/* ══════════ Brief (documento estructurado) ══════════ */
+function kvGrid(rows) {
+  return `<div class="bd-kv">${rows.map(r => `<b>${esc(r.label)}</b><span>${esc(r.value)}</span>`).join('')}</div>`;
+}
+
+function renderBriefDoc(b) {
+  const gen = new Date(b.generado);
+  const fecha = gen.toLocaleDateString('es-PE', { day: '2-digit', month: 'long', year: 'numeric' });
+  const prob = (b.conversion_prob != null) ? Math.round(b.conversion_prob * 100) : null;
+  const leadRows = [
+    { label: 'Teléfono', value: b.lead.telefono },
+    b.lead.nombre  && { label: 'Nombre',  value: b.lead.nombre },
+    b.lead.empresa && { label: 'Empresa', value: b.lead.empresa },
+    b.lead.email   && { label: 'Email',   value: b.lead.email },
+    b.lead.ruc     && { label: 'RUC',     value: b.lead.ruc },
+  ].filter(Boolean);
+
+  return `<div class="brief-doc" id="brief-doc">
+    <div class="bd-head">
+      <div class="bd-brand"><b>MAU</b><div>Lead Scoring · Contatech</div></div>
+      <div class="bd-meta">Documento generado<br>${esc(fecha)}</div>
+    </div>
+    <div class="bd-title">${esc(b.titulo)}</div>
+    <div class="bd-sub">
+      ${b.qualified ? '<span class="badge badge-green">Calificado</span>' : '<span class="badge badge-gray">No calificado</span>'}
+      ${prob != null ? `<span class="badge badge-blue">P(conversión): ${prob}%</span>` : ''}
+    </div>
+    <div class="bd-section"><h4>Datos de contacto</h4>${kvGrid(leadRows)}</div>
+    ${b.perfil.length ? `<div class="bd-section"><h4>Perfil del negocio</h4>${kvGrid(b.perfil)}</div>` : ''}
+    ${b.contexto.length ? `<div class="bd-section"><h4>Contexto comercial</h4>${kvGrid(b.contexto)}</div>` : ''}
+    ${b.modulos.length ? `<div class="bd-section"><h4>Módulos recomendados</h4>${
+      b.modulos.map(m => `<div class="bd-mod"><b>${esc(m.nombre)}</b> — ${esc(m.desc)}</div>`).join('')
+    }</div>` : ''}
+    <div class="bd-section"><h4>Siguiente paso</h4>
+      <div class="bd-next">${esc(b.siguiente_paso.accion)}<br><a href="${esc(b.siguiente_paso.link)}" target="_blank">${esc(b.siguiente_paso.link)}</a></div>
+    </div>
+    <div class="bd-foot">Generado automáticamente por MAU Lead Scoring — uso interno del equipo comercial.</div>
+  </div>`;
+}
+
+async function showBrief(leadId) {
+  document.getElementById('brief-pdf-btn').style.display = 'none';
   document.getElementById('brief-body').innerHTML = '<div class="modal-loading"><span class="spinner"></span>Generando brief…</div>';
   document.getElementById('brief-overlay').classList.add('open');
   const data = await api('POST', `/leads/${leadId}/brief`);
   if (!data) return;
-  document.getElementById('brief-body').textContent = data.brief || 'No se pudo generar el brief.';
+  if (!data.brief) {
+    document.getElementById('brief-body').textContent = 'No se pudo generar el brief.';
+    return;
+  }
+  document.getElementById('brief-body').innerHTML = renderBriefDoc(data.brief);
+  document.getElementById('brief-pdf-btn').style.display = '';
 }
 
 function closeBrief() { document.getElementById('brief-overlay').classList.remove('open'); }

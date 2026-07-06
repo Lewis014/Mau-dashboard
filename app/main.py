@@ -1,7 +1,12 @@
 import os
 import json
 import asyncio
+import base64
+import hashlib
+import hmac
+import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Depends, Query, Security
@@ -14,19 +19,46 @@ from app.catalog import MODULOS, LINK_TRIAL, LINK_DEMO
 from app.scoring import score_text
 
 APP_TOKEN = os.getenv("APP_TOKEN", "")
+ADMIN_USER = os.getenv("ADMIN_USER", "admin")
+ADMIN_PASS = os.getenv("ADMIN_PASS", "")
+SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", str(12 * 3600)))
+_SECRET = (os.getenv("SECRET_KEY") or APP_TOKEN or ADMIN_PASS).encode()
 bearer_scheme = HTTPBearer(auto_error=False)
 
 VALID_OUTCOMES = {"nuevo", "en_seguimiento", "demo_agendada", "trial_iniciado", "cliente", "perdido"}
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
 
+def _sign(payload: str) -> str:
+    return hmac.new(_SECRET, payload.encode(), hashlib.sha256).hexdigest()
+
+
+def make_session_token(user: str) -> str:
+    payload = f"{user}:{int(time.time()) + SESSION_TTL_SECONDS}"
+    return base64.urlsafe_b64encode(f"{payload}:{_sign(payload)}".encode()).decode()
+
+
+def valid_session_token(tok: str) -> bool:
+    try:
+        payload, sig = base64.urlsafe_b64decode(tok.encode()).decode().rsplit(":", 1)
+        _user, exp = payload.rsplit(":", 1)
+        return hmac.compare_digest(sig, _sign(payload)) and int(exp) > time.time()
+    except Exception:  # noqa: BLE001 — token malformado = no autorizado
+        return False
+
+
 def check_auth(creds: Optional[HTTPAuthorizationCredentials] = Security(bearer_scheme)):
-    if not creds or not APP_TOKEN or creds.credentials != APP_TOKEN:
-        raise HTTPException(
-            status_code=401,
-            detail="Unauthorized",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    tok = creds.credentials if creds else ""
+    # Acepta el APP_TOKEN legado (scripts/batch) o un token de sesion del login.
+    if tok and APP_TOKEN and hmac.compare_digest(tok, APP_TOKEN):
+        return
+    if tok and _SECRET and valid_session_token(tok):
+        return
+    raise HTTPException(
+        status_code=401,
+        detail="Unauthorized",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 @asynccontextmanager
@@ -45,6 +77,21 @@ app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None)
 
 class OutcomeBody(BaseModel):
     outcome: str
+
+
+class LoginBody(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/api/login")
+async def login(body: LoginBody):
+    if not ADMIN_PASS:
+        raise HTTPException(status_code=503, detail="Login no configurado (falta ADMIN_PASS)")
+    ok = hmac.compare_digest(body.username, ADMIN_USER) and hmac.compare_digest(body.password, ADMIN_PASS)
+    if not ok:
+        raise HTTPException(status_code=401, detail="Credenciales inválidas")
+    return {"token": make_session_token(body.username), "expires_in": SESSION_TTL_SECONDS}
 
 
 @app.get("/health")
@@ -173,40 +220,58 @@ def _es_lead_grande(lead: dict) -> bool:
     return bool(lead.get("pidio_demo")) or rucs > 10 or vol >= 1000
 
 
-def build_brief(lead: dict) -> str:
-    """Arma el brief por plantilla + reglas, sin LLM: perfil, necesidad, módulos y siguiente paso."""
+def build_brief(lead: dict) -> dict:
+    """Arma el brief por plantilla + reglas, sin LLM. Devuelve un documento estructurado
+    (secciones clave-valor) que el frontend renderiza y exporta a PDF."""
     nombre = lead.get("contact_name") or lead.get("wa_display_name") or f"+{lead.get('lead_id', '')}"
-    partes: list[str] = []
 
-    perfil = []
+    perfil: list[dict] = []
     if lead.get("segmento"):
-        perfil.append(str(lead["segmento"]))
-    if lead.get("num_rucs"):
-        perfil.append(f"{lead['num_rucs']} RUCs")
-    if lead.get("volumen_comprobantes"):
-        perfil.append(f"{lead['volumen_comprobantes']} comprobantes/mes")
+        perfil.append({"label": "Segmento", "value": str(lead["segmento"])})
     if lead.get("industry"):
-        perfil.append(str(lead["industry"]))
-    partes.append(f"Perfil: {nombre} — {', '.join(perfil) if perfil else 'sin datos de perfil'}.")
+        perfil.append({"label": "Industria", "value": str(lead["industry"])})
+    if lead.get("num_rucs"):
+        perfil.append({"label": "N° de RUCs", "value": str(lead["num_rucs"])})
+    if lead.get("volumen_comprobantes"):
+        perfil.append({"label": "Volumen", "value": f"{lead['volumen_comprobantes']} comprobantes/mes"})
 
+    contexto: list[dict] = []
     if lead.get("solucion_actual"):
-        partes.append(f"Solución actual: {lead['solucion_actual']}.")
+        contexto.append({"label": "Solución actual", "value": str(lead["solucion_actual"])})
     if lead.get("dolor_principal"):
-        partes.append(f"Necesidad: {lead['dolor_principal']}.")
+        contexto.append({"label": "Dolor principal", "value": str(lead["dolor_principal"])})
     if lead.get("objecion") and lead["objecion"] != "ninguna":
-        partes.append(f"Objeción a manejar: {lead['objecion']}.")
+        contexto.append({"label": "Objeción a manejar", "value": str(lead["objecion"])})
+    if lead.get("urgencia"):
+        contexto.append({"label": "Urgencia", "value": str(lead["urgencia"])})
+    if lead.get("pidio_demo"):
+        contexto.append({"label": "Pidió demo", "value": "Sí"})
 
-    recs = [f"- {MODULOS[m]['nombre']}: {MODULOS[m]['desc']}"
-            for m in (lead.get("modulos_interes") or []) if m in MODULOS]
-    if recs:
-        partes.append("Módulo(s) recomendado(s):\n" + "\n".join(recs))
+    modulos = [{"nombre": MODULOS[m]["nombre"], "desc": MODULOS[m]["desc"]}
+               for m in (lead.get("modulos_interes") or []) if m in MODULOS]
 
     if _es_lead_grande(lead):
-        partes.append(f"Siguiente paso: agendar demo de 45 min → {LINK_DEMO}")
+        siguiente = {"accion": "Agendar demo de 45 minutos", "link": LINK_DEMO}
     else:
-        partes.append(f"Siguiente paso: invitar a la prueba gratuita → {LINK_TRIAL}")
+        siguiente = {"accion": "Invitar a la prueba gratuita", "link": LINK_TRIAL}
 
-    return "\n\n".join(partes)
+    return {
+        "titulo": f"Brief de venta — {nombre}",
+        "generado": datetime.now(timezone.utc).isoformat(),
+        "lead": {
+            "telefono": f"+{lead.get('lead_id', '')}",
+            "nombre": lead.get("contact_name") or lead.get("wa_display_name"),
+            "empresa": lead.get("company_name"),
+            "email": lead.get("email"),
+            "ruc": lead.get("tax_id"),
+        },
+        "conversion_prob": lead.get("conversion_prob"),
+        "qualified": bool(lead.get("qualified")),
+        "perfil": perfil,
+        "contexto": contexto,
+        "modulos": modulos,
+        "siguiente_paso": siguiente,
+    }
 
 
 @app.post("/api/leads/{lead_id}/brief")
