@@ -16,6 +16,10 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       APP_TOKEN: ${APP_TOKEN}
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASS: ${ADMIN_PASS}
+      SECRET_KEY: ${SECRET_KEY:-}
+      SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-43200}
       EXTRACT_MODEL: ${EXTRACT_MODEL:-claude-sonnet-4-6}
       EMBED_MODEL: ${EMBED_MODEL:-text-embedding-3-large}
       MODEL_PATH: ${MODEL_PATH:-/models/leads_model.json}
