@@ -283,10 +283,11 @@ INSERT INTO leads_dataset (
     contact_name, email, company_name, tax_id, industry, segmento,
     num_rucs, volumen_comprobantes, modulos_interes, solucion_actual,
     objecion, urgencia, pidio_demo, dolor_principal, tipo_lead,
-    ticket_estimado, qualified, message_count, canal, transcript, is_test, updated_at
+    ticket_estimado, qualified, message_count, canal, transcript, is_test,
+    captured_at, updated_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-    $17, $18, $19, $20, $21, $22, $23, NOW()
+    $17, $18, $19, $20, $21, $22, $23, COALESCE(to_timestamp($24), NOW()), NOW()
 )
 ON CONFLICT (lead_id) DO UPDATE SET
     -- Identidad y juicios del agente: el flujo n8n en vivo es autoritativo.
@@ -316,11 +317,13 @@ ON CONFLICT (lead_id) DO UPDATE SET
     updated_at           = NOW()
 -- NO se tocan: outcome, outcome_date, outcome_source, captured_at (etiquetas manuales),
 -- ni las columnas del flujo n8n (interest, domain, score, meet_url, utm_*, job_title...).
+-- captured_at solo se fija en el INSERT (contacto que n8n nunca registro): se usa la
+-- fecha del primer mensaje real, no NOW(), para no inventar un pico de captacion hoy.
 """
 
 
 async def upsert_lead(conn: asyncpg.Connection, lead_id: str, session_id: str,
-                      data: dict, transcript: str) -> None:
+                      data: dict, transcript: str, first_ts: Optional[float]) -> None:
     await conn.execute(
         UPSERT_SQL,
         lead_id, session_id,
@@ -329,13 +332,14 @@ async def upsert_lead(conn: asyncpg.Connection, lead_id: str, session_id: str,
         data["modulos_interes"], data["solucion_actual"], data["objecion"], data["urgencia"],
         data["pidio_demo"], data["dolor_principal"], data["tipo_lead"], data["ticket_estimado"],
         data["qualified"], data["message_count"], data["canal"], transcript,
-        lead_id in TEST_LEADS,
+        lead_id in TEST_LEADS, first_ts,
     )
 
 
 # ── Procesamiento comun (independiente de la fuente) ─────────────────────────
 
-async def process_one(args, conn, client, lead_id, transcript, total, substantive, c) -> None:
+async def process_one(args, conn, client, lead_id, transcript, total, substantive, c,
+                      first_ts: Optional[float] = None) -> None:
     session_id = SESSION_PREFIX + lead_id
     if getattr(args, "skip_existing", False) and lead_id in args._existing:
         c["exist"] = c.get("exist", 0) + 1
@@ -356,7 +360,7 @@ async def process_one(args, conn, client, lead_id, transcript, total, substantiv
         print(f"[dry ] {lead_id}{tag}  msgs={total}  ->")
         print("       " + json.dumps(data, ensure_ascii=False, default=str))
     else:
-        await upsert_lead(conn, lead_id, session_id, data, transcript)
+        await upsert_lead(conn, lead_id, session_id, data, transcript, first_ts)
         mods = ",".join(data["modulos_interes"]) or "-"
         print(f"[ok  ] {lead_id}{tag}  msgs={total}  seg={data['segmento'] or '-'}  "
               f"rucs={data['num_rucs']}  mods={mods}  qual={data['qualified']}")
@@ -411,7 +415,10 @@ async def run_chatwoot(args, conn, client, c) -> None:
         transcript, total, substantive, hubo_humano = transcript_from_chatwoot(msgs, bot_id)
         if hubo_humano:
             c["humano"] = c.get("humano", 0) + 1
-        await process_one(args, conn, client, phone, transcript, total, substantive, c)
+        # Fecha del primer mensaje (epoch): solo se usa si el lead aun no existe en la tabla.
+        stamps = [m["created_at"] for m in msgs if isinstance(m.get("created_at"), (int, float))]
+        await process_one(args, conn, client, phone, transcript, total, substantive, c,
+                          min(stamps) if stamps else None)
 
 
 async def run_n8n(args, conn, client, c) -> None:
