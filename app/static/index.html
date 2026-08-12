@@ -58,7 +58,11 @@
     /* ── Toolbar ── */
     .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
     .toolbar label { font-size: 13px; font-weight: 600; color: var(--gray-600); white-space: nowrap; }
-    .toolbar select { border: 1px solid var(--gray-200); border-radius: 6px; padding: 7px 10px; font-size: 13px; color: var(--gray-800); background: white; cursor: pointer; }
+    .toolbar select, .toolbar input[type="date"] { border: 1px solid var(--gray-200); border-radius: 6px; padding: 7px 10px; font-size: 13px; color: var(--gray-800); background: white; cursor: pointer; font-family: inherit; }
+    .toolbar .sep { width: 1px; align-self: stretch; background: var(--gray-200); margin: 0 2px; }
+    .range-chip { display: inline-flex; align-items: center; gap: 6px; }
+    .range-chip button { border: none; background: none; padding: 0; margin-left: 2px; color: inherit; font-size: 13px; line-height: 1; cursor: pointer; opacity: 0.65; }
+    .range-chip button:hover { opacity: 1; }
     .count { margin-left: auto; font-size: 13px; color: var(--gray-500); }
 
     /* ── Table ── */
@@ -70,6 +74,8 @@
     tbody tr { cursor: pointer; }
     tbody tr:hover td { background: var(--gray-50); }
     .cell-muted { color: var(--gray-500); }
+    /* En un <td> el max-width lo ignora el layout automatico de tabla: va en un div interior. */
+    .cell-email { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     /* ── Badges ── */
     .badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 20px; font-size: 11px; font-weight: 600; white-space: nowrap; }
@@ -226,6 +232,34 @@
     <section id="view-dashboard" style="display:none">
       <div class="page-title">Dashboard</div>
       <div class="page-sub">Resumen del pipeline de leads de MAU.</div>
+      <div class="toolbar">
+        <label>Desde:</label>
+        <input type="date" id="d-desde" onchange="onRangoManual()">
+        <label>Hasta:</label>
+        <input type="date" id="d-hasta" onchange="onRangoManual()">
+        <span class="sep"></span>
+        <label>Mes:</label>
+        <select id="d-mes" onchange="onAtajoMesAnio()">
+          <option value="">—</option>
+          <option value="1">Enero</option>
+          <option value="2">Febrero</option>
+          <option value="3">Marzo</option>
+          <option value="4">Abril</option>
+          <option value="5">Mayo</option>
+          <option value="6">Junio</option>
+          <option value="7">Julio</option>
+          <option value="8">Agosto</option>
+          <option value="9">Septiembre</option>
+          <option value="10">Octubre</option>
+          <option value="11">Noviembre</option>
+          <option value="12">Diciembre</option>
+        </select>
+        <label>Año:</label>
+        <select id="d-anio" onchange="onAtajoMesAnio()">
+          <option value="">—</option>
+        </select>
+        <button class="btn-sm" onclick="limpiarRango()">Limpiar</button>
+      </div>
       <div class="kpi-grid" id="kpi-grid">
         <div class="empty-box"><span class="spinner"></span>Cargando…</div>
       </div>
@@ -259,6 +293,8 @@
           <option value="recientes">Recientes</option>
           <option value="score">Prob. conversión</option>
         </select>
+        <!-- Rango de fechas: los controles viven en el dashboard; aqui solo se refleja. -->
+        <span class="badge badge-blue range-chip" id="range-chip" style="display:none"></span>
         <span class="count" id="count-badge"></span>
       </div>
       <div class="card">
@@ -268,6 +304,7 @@
               <th>Teléfono</th>
               <th>Nombre</th>
               <th>Empresa</th>
+              <th>Correo</th>
               <th>P(conv.)</th>
               <th>Tipo Lead</th>
               <th>Calificado</th>
@@ -277,7 +314,7 @@
             </tr>
           </thead>
           <tbody id="tbody">
-            <tr class="empty-row"><td colspan="9"><span class="spinner"></span>Cargando…</td></tr>
+            <tr class="empty-row"><td colspan="10"><span class="spinner"></span>Cargando…</td></tr>
           </tbody>
         </table>
       </div>
@@ -343,6 +380,10 @@ const PAGE = 50;
 let page = 0;
 let currentLeadId = null;   // detalle
 let tagSelected = null;     // etiquetado
+// Rango de fechas de captura. Unico filtro que NO vive en el DOM: se comparte entre
+// #dashboard (donde estan los controles) y #leads (que solo lo refleja en un chip).
+let dateRange = { desde: '', hasta: '' };
+let aniosCargados = false;
 
 const OUTCOME_LABELS = {
   nuevo: 'Nuevo',
@@ -445,8 +486,9 @@ window.addEventListener('hashchange', route);
 
 /* ══════════ Dashboard ══════════ */
 async function loadDashboard() {
-  const s = await api('GET', '/stats');
+  const s = await api('GET', '/stats?' + aplicarRango(new URLSearchParams()));
   if (!s) return;
+  poblarAnios(s.primer_lead);
 
   const prob = s.prob_promedio != null ? Math.round(s.prob_promedio * 100) + '<small>%</small>' : '—';
   document.getElementById('kpi-grid').innerHTML = `
@@ -484,6 +526,88 @@ function goLeadsFiltered(outcome) {
   nav('leads');
 }
 
+/* ══════════ Rango de fechas (compartido #dashboard ↔ #leads) ══════════ */
+
+function aplicarRango(params) {
+  if (dateRange.desde) params.set('desde', dateRange.desde);
+  if (dateRange.hasta) params.set('hasta', dateRange.hasta);
+  return params;
+}
+
+/* Fecha -> 'YYYY-MM-DD' en hora local. No usar toISOString(): convierte a UTC y
+   en Lima (UTC-5) devolveria el dia anterior. */
+function isoDia(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/* El selector de años cubre desde el primer lead registrado hasta hoy. Se puebla una
+   sola vez; /api/stats devuelve primer_lead sin aplicar el filtro de fecha. */
+function poblarAnios(primerLead) {
+  if (aniosCargados) return;
+  const sel = document.getElementById('d-anio');
+  const hasta = new Date().getFullYear();
+  const desde = primerLead ? new Date(primerLead).getFullYear() : hasta;
+  for (let a = hasta; a >= desde; a--) {
+    sel.insertAdjacentHTML('beforeend', `<option value="${a}">${a}</option>`);
+  }
+  aniosCargados = true;
+}
+
+/* Atajo Mes/Año: reescribe desde/hasta. Mes sin año usa el año en curso; año sin mes
+   toma el año completo. */
+function onAtajoMesAnio() {
+  const vMes  = document.getElementById('d-mes').value;
+  const vAnio = document.getElementById('d-anio').value;
+  if (!vMes && !vAnio) return limpiarRango();
+
+  const mes  = parseInt(vMes, 10);
+  const anio = parseInt(vAnio, 10) || new Date().getFullYear();
+  const ini  = mes ? new Date(anio, mes - 1, 1) : new Date(anio, 0, 1);
+  const fin  = mes ? new Date(anio, mes, 0)     : new Date(anio, 11, 31);
+
+  dateRange = { desde: isoDia(ini), hasta: isoDia(fin) };
+  document.getElementById('d-desde').value = dateRange.desde;
+  document.getElementById('d-hasta').value = dateRange.hasta;
+  recargarPorRango();
+}
+
+/* Edicion manual de desde/hasta: el atajo deja de describir el rango, se limpia. */
+function onRangoManual() {
+  dateRange = {
+    desde: document.getElementById('d-desde').value,
+    hasta: document.getElementById('d-hasta').value,
+  };
+  document.getElementById('d-mes').value = '';
+  document.getElementById('d-anio').value = '';
+  recargarPorRango();
+}
+
+function limpiarRango() {
+  dateRange = { desde: '', hasta: '' };
+  ['d-desde', 'd-hasta', 'd-mes', 'd-anio'].forEach(id => document.getElementById(id).value = '');
+  recargarPorRango();
+}
+
+function recargarPorRango() {
+  page = 0;
+  const v = (location.hash.replace(/^#/, '') || 'dashboard').split('/')[0];
+  if (v === 'leads') loadLeads(); else loadDashboard();
+}
+
+/* Chip de solo lectura en la toolbar de #leads: los controles estan en el dashboard,
+   asi que sin esto la tabla apareceria filtrada sin explicacion. */
+function renderRangeChip() {
+  const chip = document.getElementById('range-chip');
+  if (!dateRange.desde && !dateRange.hasta) { chip.style.display = 'none'; return; }
+  // fmtDate parsea 'YYYY-MM-DD' como UTC; el sufijo horario lo fuerza a hora local.
+  const d = dateRange.desde ? fmtDate(dateRange.desde + 'T00:00:00') : '…';
+  const h = dateRange.hasta ? fmtDate(dateRange.hasta + 'T00:00:00') : '…';
+  chip.style.display = '';
+  chip.innerHTML = `${esc(d)} – ${esc(h)}<button onclick="limpiarRango()" title="Quitar filtro de fechas">✕</button>`;
+}
+
+/* Sin filtrar por fecha a proposito: es el backlog total pendiente de etiquetar,
+   no debe encogerse por el rango que el usuario tenga puesto en el dashboard. */
 async function refreshTagBadge() {
   const s = await api('GET', '/stats');
   if (!s) return;
@@ -504,7 +628,9 @@ async function loadLeads() {
   if (outcome) params.set('outcome', outcome);
   if (qual)    params.set('qualified', qual);
   if (sort)    params.set('sort', sort);
+  aplicarRango(params);
 
+  renderRangeChip();
   const data = await api('GET', '/leads?' + params);
   if (!data) return;
 
@@ -530,7 +656,7 @@ function probCell(l) {
 function renderRows(leads) {
   const tb = document.getElementById('tbody');
   if (!leads.length) {
-    tb.innerHTML = '<tr class="empty-row"><td colspan="9">Sin leads para mostrar</td></tr>';
+    tb.innerHTML = '<tr class="empty-row"><td colspan="10">Sin leads para mostrar</td></tr>';
     return;
   }
   tb.innerHTML = leads.map(l => {
@@ -539,6 +665,7 @@ function renderRows(leads) {
       <td><code style="font-size:12px;color:var(--gray-600)">+${id}</code></td>
       <td>${l.contact_name ? esc(l.contact_name) : '<span class="cell-muted">—</span>'}</td>
       <td>${l.company_name ? esc(l.company_name) : '<span class="cell-muted">—</span>'}</td>
+      <td>${l.email ? `<div class="cell-email" title="${esc(l.email)}">${esc(l.email)}</div>` : '<span class="cell-muted">—</span>'}</td>
       <td>${probCell(l)}</td>
       <td>${l.tipo_lead ? `<span class="badge badge-blue">${esc(l.tipo_lead)}</span>` : '<span class="cell-muted">—</span>'}</td>
       <td>${l.qualified ? '<span class="badge badge-green">Sí</span>' : '<span class="badge badge-gray">No</span>'}</td>

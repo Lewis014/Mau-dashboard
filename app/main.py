@@ -27,6 +27,9 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 VALID_OUTCOMES = {"nuevo", "en_seguimiento", "demo_agendada", "trial_iniciado", "cliente", "perdido"}
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+# Zona horaria del negocio: captured_at es timestamptz y el contenedor corre en UTC,
+# asi que los filtros por dia se evaluan aqui para que "12 de agosto" sea el dia peruano.
+LOCAL_TZ = os.getenv("LOCAL_TZ", "America/Lima")
 
 
 def _sign(payload: str) -> str:
@@ -110,12 +113,48 @@ ORDER_BY = {
 }
 
 
+def _rango_captura(desde: Optional[str], hasta: Optional[str],
+                   conditions: list[str], args: list) -> None:
+    """Agrega el filtro por fecha de captura a conditions/args (los modifica in-place).
+
+    Fechas en formato YYYY-MM-DD; 'hasta' es inclusivo (el dia completo). La comparacion
+    se hace sobre la fecha local (LOCAL_TZ) y no sobre el timestamptz crudo: un lead de
+    las 21:00 de Lima es 02:00 UTC del dia siguiente, y sin convertir caeria en el dia
+    equivocado. El coste de la expresion funcional es irrelevante a esta escala.
+    """
+    if not desde and not hasta:
+        return
+    args.append(LOCAL_TZ)
+    tz = f"${len(args)}::text"  # el cast evita la ambiguedad text/interval de AT TIME ZONE
+    for raw, op in ((desde, ">="), (hasta, "<=")):
+        if not raw:
+            continue
+        try:
+            dia = datetime.strptime(raw, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Fecha inválida: {raw!r} (se espera YYYY-MM-DD)")
+        args.append(dia)
+        conditions.append(f"(captured_at AT TIME ZONE {tz})::date {op} ${len(args)}")
+
+
 @app.get("/api/stats")
-async def stats(_=Depends(check_auth)):
-    """KPIs para el dashboard: totales, calificados, clientes, prob promedio y conteo por outcome."""
+async def stats(
+    desde: Optional[str] = Query(None),
+    hasta: Optional[str] = Query(None),
+    _=Depends(check_auth),
+):
+    """KPIs para el dashboard: totales, calificados, clientes, prob promedio y conteo por outcome.
+
+    desde/hasta (YYYY-MM-DD, ambos inclusivos) acotan por fecha de captura.
+    """
     pool = db.get_pool()
+    conditions = ["is_test = false"]
+    args: list = []
+    _rango_captura(desde, hasta, conditions, args)
+    where = "WHERE " + " AND ".join(conditions)
+
     row = await pool.fetchrow(
-        """
+        f"""
         SELECT
           COUNT(*)                                            AS total,
           COUNT(*) FILTER (WHERE qualified)                   AS calificados,
@@ -124,11 +163,17 @@ async def stats(_=Depends(check_auth)):
           COUNT(*) FILTER (WHERE conversion_prob IS NOT NULL) AS con_score,
           COUNT(*) FILTER (WHERE transcript IS NOT NULL)      AS con_transcript
         FROM leads_dataset
-        WHERE is_test = false
-        """
+        {where}
+        """,
+        *args,
     )
     outcomes = await pool.fetch(
-        "SELECT outcome, COUNT(*) AS n FROM leads_dataset WHERE is_test = false GROUP BY outcome"
+        f"SELECT outcome, COUNT(*) AS n FROM leads_dataset {where} GROUP BY outcome", *args
+    )
+    # Sin el filtro de fecha: alimenta el selector de años del dashboard, que debe
+    # ofrecer todo el historico aunque el rango activo sea de un solo mes.
+    primer = await pool.fetchval(
+        "SELECT MIN(captured_at) FROM leads_dataset WHERE is_test = false"
     )
     return {
         "total": row["total"],
@@ -138,6 +183,7 @@ async def stats(_=Depends(check_auth)):
         "con_score": row["con_score"],
         "con_transcript": row["con_transcript"],
         "por_outcome": {r["outcome"]: r["n"] for r in outcomes},
+        "primer_lead": primer.isoformat() if primer else None,
     }
 
 
@@ -146,13 +192,17 @@ async def list_leads(
     outcome: Optional[str] = Query(None),
     qualified: Optional[str] = Query(None),
     has_transcript: Optional[str] = Query(None),
+    desde: Optional[str] = Query(None),
+    hasta: Optional[str] = Query(None),
     sort: str = Query("recientes"),
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
     _=Depends(check_auth),
 ):
     pool = db.get_pool()
-    conditions: list[str] = []
+    # is_test se excluye igual que en /api/stats: con el rango de fechas compartido entre
+    # ambas vistas, los conteos del dashboard y de la tabla tienen que cuadrar.
+    conditions: list[str] = ["is_test = false"]
     args: list = []
 
     if outcome and outcome in VALID_OUTCOMES:
@@ -163,8 +213,9 @@ async def list_leads(
         args.append(qualified == "true")
     if has_transcript == "true":
         conditions.append("transcript IS NOT NULL")
+    _rango_captura(desde, hasta, conditions, args)
 
-    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    where = "WHERE " + " AND ".join(conditions)
     order_by = ORDER_BY.get(sort, ORDER_BY["recientes"])
 
     total = await pool.fetchval(f"SELECT COUNT(*) FROM leads_dataset {where}", *args)
