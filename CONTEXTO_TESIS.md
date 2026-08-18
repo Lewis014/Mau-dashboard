@@ -60,7 +60,7 @@
 1. **El JSON viejo era para handoff a CRM, no para predecir.** Capturaba identidad (PII) pero tiraba las señales crudas de tamaño (`num_rucs`, `volumen_comprobantes`), guardando solo el resultado digerido (`ticket_estimado`, `tipo_lead`, que son juicios del LLM). Por eso los 97 históricos son débiles.
 2. **`qualified` ≠ `converted`.** `qualified` es un FEATURE (heurístico del agente / "ya hay contacto"), no la etiqueta. La etiqueta real es el resultado downstream.
 3. **Schema de features rediseñado:** +11 campos estructurados con enums/números/booleanos, regla anti-alucinación (nunca inventar `num_rucs`/`volumen_comprobantes`), y se eliminó el ambiguo `domain`.
-4. **`outcome` como enum multi-estado:** `nuevo → demo_agendada → trial_iniciado → cliente | perdido | en_seguimiento`. Los `en_seguimiento` (abiertos) se excluyen del entrenamiento. Etiqueta atada a hecho objetivo cuando se pueda.
+4. **Etiquetas múltiples (`outcome_tags`), no un enum:** un lead lleva a la vez su estado de venta, su responsable y su canal de origen (p. ej. `demo_agendada` + `diego` + `meta`), así que la etiqueta es un `TEXT[]` y no un valor único. Para la tesis se sigue derivando un **estado principal** en `outcome` (la etiqueta más avanzada del embudo: `cliente > perdido > free_trial > cotizacion > demo_realizada > demo_agendada > llamada > insistir > lead_interesado > llamada_no_responde`, o `nuevo` sin ninguna). Solo `cliente`/`free_trial` (positivos) y `perdido` (negativo) entran al entrenamiento; los estados en curso son censura y se excluyen. `perdido` va por delante de `free_trial` a propósito: un trial que se fuga es un negativo. Etiqueta atada a hecho objetivo cuando se pueda.
 5. **`is_test`** para excluir conversaciones de prueba (el primer lead capturado, `51934226756` "Douglas" con el correo del propio Piero, ya está marcado).
 6. **Backfill re-extrae desde texto crudo**, no confía en el JSON viejo: los 97 son heterogéneos (algunos de un prompt B2B genérico anterior, ni siquiera contable; otros basura tipo "Hola"/"Hola"). Filtra sesiones con < 2 turnos humanos sustantivos.
 
@@ -92,9 +92,25 @@ CREATE TABLE IF NOT EXISTS leads_dataset (
   was_debounced BOOLEAN,
   -- Juicios del agente (features, NO label)
   tipo_lead TEXT, ticket_estimado TEXT, qualified BOOLEAN,
-  -- Etiqueta (se llena desde el dashboard)
-  outcome TEXT DEFAULT 'nuevo',   -- nuevo|demo_agendada|trial_iniciado|cliente|perdido|en_seguimiento
+  -- Etiquetas (se llenan desde el dashboard). Un lead puede llevar varias y de grupos
+  -- distintos, por eso son un array y no un enum:
+  --   estado      lead_interesado|llamada|llamada_no_responde|insistir|demo_agendada|
+  --               demo_realizada|cotizacion|free_trial|cliente|perdido
+  --   responsable alyssa|diego|jhon
+  --   canal       meta|organico|tiktok
+  outcome_tags TEXT[] NOT NULL DEFAULT '{}',
+  -- Estado principal DERIVADO de outcome_tags (no se edita a mano): la etiqueta de estado
+  -- mas avanzada del embudo, o 'nuevo' si aun no tiene ninguna. Existe para que el KPI de
+  -- clientes y el pipeline de la tesis sigan teniendo un valor unico por lead.
+  outcome TEXT DEFAULT 'nuevo',
   outcome_date TIMESTAMPTZ, outcome_source TEXT,   -- manual | auto
+  -- Estado comercial traido de mau-web por app/sync_planes.py (no se edita a mano).
+  -- Deriva de user_plan_history: 'Aprobado' = un pago. user_plans.state NO sirve, porque
+  -- su cron lleva a 'Expirado' tanto al que agoto la prueba como al cliente que no renovo.
+  plan_estado TEXT,     -- cliente_activo|ex_cliente|trial_activo|trial_vencido|pago_en_verificacion|sin_cuenta
+  plan_nombre TEXT, plan_inicia TIMESTAMPTZ, plan_expira TIMESTAMPTZ,
+  plan_pagos INTEGER,   -- nº de pagos aprobados; 0 = probo y nunca compro
+  plan_user_id INTEGER, plan_match TEXT, plan_sync_at TIMESTAMPTZ,
   captured_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now(),
   is_test BOOLEAN DEFAULT false

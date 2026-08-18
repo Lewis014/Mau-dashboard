@@ -13,7 +13,7 @@ Decisiones del doc de tesis que respeta:
   - Re-extraccion desde texto crudo, no del JSON viejo de handoff.
   - Anti-alucinacion: num_rucs / volumen_comprobantes solo si el lead dio cifra explicita.
   - Filtra sesiones con < 2 turnos humanos sustantivos (basura tipo "Hola"/"Hola").
-  - Upsert preserva columnas manuales (outcome*, captured_at, is_test) y las del flujo n8n.
+  - Upsert preserva columnas manuales (outcome_tags, outcome*, captured_at, is_test) y las del flujo n8n.
   - Marca el lead de prueba conocido (51934226756) como is_test.
 
 Uso (dentro del contenedor del dashboard):
@@ -315,7 +315,8 @@ ON CONFLICT (lead_id) DO UPDATE SET
     transcript           = EXCLUDED.transcript,
     is_test              = leads_dataset.is_test OR EXCLUDED.is_test,
     updated_at           = NOW()
--- NO se tocan: outcome, outcome_date, outcome_source, captured_at (etiquetas manuales),
+-- NO se tocan: outcome_tags, outcome (derivado de ellas), outcome_date, outcome_source
+-- ni captured_at — son el etiquetado manual del dashboard;
 -- ni las columnas del flujo n8n (interest, domain, score, meet_url, utm_*, job_title...).
 -- captured_at solo se fija en el INSERT (contacto que n8n nunca registro): se usa la
 -- fecha del primer mensaje real, no NOW(), para no inventar un pico de captacion hoy.

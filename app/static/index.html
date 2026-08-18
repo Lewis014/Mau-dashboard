@@ -15,7 +15,12 @@
       --orange: #ea580c; --orange-light: #ffedd5;
       --purple: #7c3aed; --purple-light: #ede9fe;
       --blue: #2563eb; --blue-light: #dbeafe;
-      --amber: #d97706;
+      --amber: #d97706; --amber-light: #fef3c7;
+      --cyan: #0891b2; --cyan-light: #cffafe;
+      --indigo: #4f46e5; --indigo-light: #e0e7ff;
+      --teal: #0d9488; --teal-light: #ccfbf1;
+      --slate: #334155; --slate-light: #e2e8f0;
+      --brown: #92400e; --brown-light: #fde9d0;
       --header-h: 62px; --sidebar-w: 240px;
     }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--gray-50); color: var(--gray-800); min-height: 100vh; }
@@ -50,6 +55,10 @@
     .kpi-foot { font-size: 12px; color: var(--gray-500); margin-top: 8px; }
 
     .section-title { font-size: 16px; font-weight: 700; margin-bottom: 12px; }
+    .section-title small { font-weight: 500; font-size: 12.5px; color: var(--gray-500); margin-left: 6px; }
+    .section-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    /* Fecha de vencimiento y nº de pagos bajo el badge de plan, en la tabla de leads. */
+    .plan-sub { font-size: 11px; color: var(--gray-500); margin-top: 3px; white-space: nowrap; }
     .outcome-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 28px; }
     .outcome-card { background: white; border: 1px solid var(--gray-200); border-radius: 10px; padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; cursor: pointer; }
     .outcome-card:hover { border-color: var(--gray-300); }
@@ -85,6 +94,14 @@
     .badge-orange { background: var(--orange-light); color: var(--orange); }
     .badge-red    { background: var(--red-light); color: var(--red); }
     .badge-purple { background: var(--purple-light); color: var(--purple); }
+    .badge-amber  { background: var(--amber-light); color: var(--amber); }
+    .badge-cyan   { background: var(--cyan-light); color: var(--cyan); }
+    .badge-indigo { background: var(--indigo-light); color: var(--indigo); }
+    .badge-teal   { background: var(--teal-light); color: var(--teal); }
+    /* Responsable y canal comparten color dentro de su grupo: el color distingue la
+       categoria de un vistazo, no la etiqueta concreta (que ya se lee en el texto). */
+    .badge-slate  { background: var(--slate-light); color: var(--slate); }
+    .badge-brown  { background: var(--brown-light); color: var(--brown); }
 
     /* ── Score bar ── */
     .score-wrap { display: flex; align-items: center; gap: 6px; }
@@ -93,8 +110,6 @@
     .score-text { font-size: 12px; color: var(--gray-500); }
 
     /* ── Buttons / selects ── */
-    .outcome-sel { border: 1px solid var(--gray-200); border-radius: 6px; padding: 4px 8px; font-size: 12px; cursor: pointer; background: white; max-width: 150px; }
-    .outcome-sel:focus { outline: 2px solid var(--brand-accent); border-color: transparent; }
     .btn-sm { border: 1px solid var(--gray-200); background: white; border-radius: 6px; padding: 5px 12px; font-size: 13px; cursor: pointer; color: var(--gray-600); }
     .btn-sm:hover { background: var(--gray-50); }
     header .btn-sm { background: transparent; color: white; border-color: rgba(255,255,255,0.35); }
@@ -138,15 +153,33 @@
     .tag-item.active { background: var(--brand-light); border-left: 3px solid var(--brand); }
     .tag-item .t-name { font-weight: 600; font-size: 13.5px; }
     .tag-item .t-sub { font-size: 12px; color: var(--gray-500); margin-top: 2px; }
-    .outcome-btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
-    .btn-outcome { border: 1px solid var(--gray-200); background: white; border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: 600; cursor: pointer; }
-    .btn-outcome:hover { border-color: var(--gray-400); }
-    .btn-outcome.sel-green  { background: var(--green-light);  color: var(--green);  border-color: var(--green); }
-    .btn-outcome.sel-red    { background: var(--red-light);    color: var(--red);    border-color: var(--red); }
-    .btn-outcome.sel-blue   { background: var(--blue-light);   color: var(--blue);   border-color: var(--blue); }
-    .btn-outcome.sel-purple { background: var(--purple-light); color: var(--purple); border-color: var(--purple); }
-    .btn-outcome.sel-orange { background: var(--orange-light); color: var(--orange); border-color: var(--orange); }
-    .btn-outcome.sel-gray   { background: var(--gray-100);     color: var(--gray-600); border-color: var(--gray-400); }
+    /* ── Etiquetas (picker + celda de la tabla) ── */
+    .tag-picker { margin-top: 6px; }
+    .tag-group-title { font-size: 10.5px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--gray-400); margin: 12px 0 6px; }
+    .tag-group-title:first-child { margin-top: 0; }
+    .tag-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+    .btn-tag { border: 1px solid var(--gray-200); background: white; border-radius: 8px; padding: 6px 12px; font-size: 12.5px; font-weight: 600; cursor: pointer; color: var(--gray-600); font-family: inherit; }
+    .btn-tag:hover { border-color: var(--gray-400); }
+    .btn-tag:disabled { opacity: 0.5; cursor: progress; }
+    .btn-tag.sel-green  { background: var(--green-light);  color: var(--green);  border-color: var(--green); }
+    .btn-tag.sel-red    { background: var(--red-light);    color: var(--red);    border-color: var(--red); }
+    .btn-tag.sel-blue   { background: var(--blue-light);   color: var(--blue);   border-color: var(--blue); }
+    .btn-tag.sel-purple { background: var(--purple-light); color: var(--purple); border-color: var(--purple); }
+    .btn-tag.sel-orange { background: var(--orange-light); color: var(--orange); border-color: var(--orange); }
+    .btn-tag.sel-amber  { background: var(--amber-light);  color: var(--amber);  border-color: var(--amber); }
+    .btn-tag.sel-cyan   { background: var(--cyan-light);   color: var(--cyan);   border-color: var(--cyan); }
+    .btn-tag.sel-indigo { background: var(--indigo-light); color: var(--indigo); border-color: var(--indigo); }
+    .btn-tag.sel-teal   { background: var(--teal-light);   color: var(--teal);   border-color: var(--teal); }
+    .btn-tag.sel-slate  { background: var(--slate-light);  color: var(--slate);  border-color: var(--slate); }
+    .btn-tag.sel-brown  { background: var(--brown-light);  color: var(--brown);  border-color: var(--brown); }
+    .btn-tag.sel-gray   { background: var(--gray-100);     color: var(--gray-600); border-color: var(--gray-400); }
+
+    .tag-cell { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; max-width: 230px; }
+    .btn-tag-add { border: 1px dashed var(--gray-300); background: white; border-radius: 20px; width: 22px; height: 22px; font-size: 14px; line-height: 1; color: var(--gray-500); cursor: pointer; flex-shrink: 0; padding: 0; }
+    .btn-tag-add:hover { border-color: var(--brand-accent); color: var(--brand-accent); }
+    /* Fixed y colgado del <body>, no de la celda: .card recorta con overflow:hidden y un
+       popover absoluto dentro de la tabla quedaria cortado. JS le pone top/left. */
+    .tag-pop { position: fixed; z-index: 40; width: 300px; max-height: 70vh; overflow-y: auto; background: white; border: 1px solid var(--gray-200); border-radius: 10px; padding: 14px; box-shadow: 0 12px 32px rgba(15,23,42,0.16); cursor: default; }
 
     /* ── Empty / Loading ── */
     .empty-row td { text-align: center; padding: 48px; color: var(--gray-500); cursor: default; }
@@ -263,8 +296,14 @@
       <div class="kpi-grid" id="kpi-grid">
         <div class="empty-box"><span class="spinner"></span>Cargando…</div>
       </div>
-      <div class="section-title">Leads por outcome</div>
-      <div class="outcome-grid" id="outcome-grid"></div>
+      <div class="section-title section-title-row">
+        <span>Embudo comercial <small>según los planes de MAU Comunica</small></span>
+        <button class="btn-sm" id="sync-btn" onclick="syncPlanes()">Sincronizar planes</button>
+      </div>
+      <div id="plan-grid"></div>
+      <div class="section-title">Leads por etiqueta</div>
+      <!-- Contenedor plano: cada grupo pinta dentro su propia .outcome-grid. -->
+      <div id="outcome-grid"></div>
     </section>
 
     <!-- ══ Leads ══ -->
@@ -272,16 +311,8 @@
       <div class="page-title">Leads</div>
       <div class="page-sub">Todos los leads capturados desde WhatsApp. Haz clic en una fila para ver el detalle.</div>
       <div class="toolbar">
-        <label>Outcome:</label>
-        <select id="f-outcome" onchange="resetAndLoad()">
-          <option value="">Todos</option>
-          <option value="nuevo">Nuevo</option>
-          <option value="en_seguimiento">En seguimiento</option>
-          <option value="demo_agendada">Demo agendada</option>
-          <option value="trial_iniciado">Trial iniciado</option>
-          <option value="cliente">Cliente</option>
-          <option value="perdido">Perdido</option>
-        </select>
+        <!-- Un desplegable por grupo de etiquetas; los genera renderTagFiltros(). -->
+        <span id="tag-filtros"></span>
         <label>Calificado:</label>
         <select id="f-qualified" onchange="resetAndLoad()">
           <option value="">Todos</option>
@@ -308,13 +339,14 @@
               <th>P(conv.)</th>
               <th>Tipo Lead</th>
               <th>Calificado</th>
-              <th>Outcome</th>
+              <th>Plan</th>
+              <th>Etiquetas</th>
               <th>Fecha</th>
               <th></th>
             </tr>
           </thead>
           <tbody id="tbody">
-            <tr class="empty-row"><td colspan="10"><span class="spinner"></span>Cargando…</td></tr>
+            <tr class="empty-row"><td colspan="11"><span class="spinner"></span>Cargando…</td></tr>
           </tbody>
         </table>
       </div>
@@ -385,22 +417,52 @@ let tagSelected = null;     // etiquetado
 let dateRange = { desde: '', hasta: '' };
 let aniosCargados = false;
 
-const OUTCOME_LABELS = {
-  nuevo: 'Nuevo',
-  en_seguimiento: 'En seguimiento',
-  demo_agendada: 'Demo agendada',
-  trial_iniciado: 'Trial iniciado',
-  cliente: 'Cliente',
-  perdido: 'Perdido',
-};
-const OUTCOME_CLASS = {
-  nuevo: 'gray',
-  en_seguimiento: 'blue',
-  demo_agendada: 'purple',
-  trial_iniciado: 'orange',
-  cliente: 'green',
-  perdido: 'red',
-};
+/* Etiquetas de lead: unica definicion del frontend. Filtros, badges, botones y las
+   tarjetas del dashboard se generan desde aqui; debe coincidir con TAG_GROUPS de main.py.
+   v = slug guardado en BD, l = etiqueta visible, c = sufijo de las clases badge-/sel-. */
+const TAG_GROUPS = [
+  { key: 'estado', label: 'Estado', tags: [
+    { v: 'lead_interesado',     l: 'Lead interesado',     c: 'blue' },
+    { v: 'llamada',             l: 'Llamada',             c: 'cyan' },
+    { v: 'llamada_no_responde', l: 'Llamada no responde', c: 'gray' },
+    { v: 'insistir',            l: 'Insistir',            c: 'amber' },
+    { v: 'demo_agendada',       l: 'Demo agendada',       c: 'purple' },
+    { v: 'demo_realizada',      l: 'Demo realizada',      c: 'indigo' },
+    { v: 'cotizacion',          l: 'Cotización',          c: 'orange' },
+    { v: 'free_trial',          l: 'Free trial',          c: 'teal' },
+    { v: 'cliente',             l: 'Cliente/Convertido',  c: 'green' },
+    { v: 'perdido',             l: 'Perdido',             c: 'red' },
+  ]},
+  { key: 'responsable', label: 'Responsable', tags: [
+    { v: 'alyssa', l: 'Alyssa', c: 'slate' },
+    { v: 'diego',  l: 'Diego',  c: 'slate' },
+    { v: 'jhon',   l: 'Jhon',   c: 'slate' },
+  ]},
+  { key: 'canal', label: 'Canal', tags: [
+    { v: 'meta',     l: 'Meta',     c: 'brown' },
+    { v: 'organico', l: 'Orgánico', c: 'brown' },
+    { v: 'tiktok',   l: 'TikTok',   c: 'brown' },
+  ]},
+];
+/* Estado comercial que trae el sync desde mau-web (app/sync_planes.py). No se edita a
+   mano: es un hecho del sistema de suscripciones, no una opinion del vendedor. */
+const PLAN_ESTADOS = [
+  { v: 'cliente_activo',       l: 'Cliente activo',   c: 'green' },
+  { v: 'ex_cliente',           l: 'Ex-cliente',       c: 'amber' },
+  { v: 'trial_activo',         l: 'Prueba activa',    c: 'teal' },
+  { v: 'trial_vencido',        l: 'Prueba vencida',   c: 'red' },
+  { v: 'pago_en_verificacion', l: 'Pago en revisión', c: 'blue' },
+  { v: 'sin_cuenta',           l: 'Sin cuenta',       c: 'gray' },
+];
+const PLAN_LABEL = {}, PLAN_CLASS = {};
+for (const p of PLAN_ESTADOS) { PLAN_LABEL[p.v] = p.l; PLAN_CLASS[p.v] = p.c; }
+
+// Indices planos slug → etiqueta / color / grupo, para no recorrer TAG_GROUPS en cada render.
+const TAG_LABEL = {}, TAG_CLASS = {}, TAG_GROUP = {};
+const TAG_ORDER = [];
+for (const g of TAG_GROUPS) for (const t of g.tags) {
+  TAG_LABEL[t.v] = t.l; TAG_CLASS[t.v] = t.c; TAG_GROUP[t.v] = g.key; TAG_ORDER.push(t.v);
+}
 
 function esc(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -513,17 +575,73 @@ async function loadDashboard() {
       <div class="kpi-foot">${s.con_score} lead${s.con_score !== 1 ? 's' : ''} puntuados por el modelo</div>
     </div>`;
 
-  document.getElementById('outcome-grid').innerHTML = Object.keys(OUTCOME_LABELS).map(o => `
-    <div class="outcome-card" onclick="goLeadsFiltered('${o}')">
-      <span class="badge badge-${OUTCOME_CLASS[o]}">${OUTCOME_LABELS[o]}</span>
-      <span class="outcome-n">${s.por_outcome[o] || 0}</span>
-    </div>`).join('');
+  const porPlan = s.por_plan_estado || {};
+  const sincronizado = Object.values(porPlan).reduce((a, b) => a + b, 0);
+  document.getElementById('plan-grid').innerHTML = sincronizado
+    ? `<div class="outcome-grid">${PLAN_ESTADOS.map(p => `
+        <div class="outcome-card" onclick="goLeadsPlan('${p.v}')">
+          <span class="badge badge-${p.c}">${esc(p.l)}</span>
+          <span class="outcome-n">${porPlan[p.v] || 0}</span>
+        </div>`).join('')}</div>`
+    : `<div class="empty-box">Todavía no se ha sincronizado con MAU Comunica.
+         Pulsa <b>Sincronizar planes</b> para traer el estado de cada lead.</div>`;
+
+  const porTag = s.por_tag || {};
+  // Un lead con varias etiquetas cuenta en cada una: los grupos no suman el total, y por
+  // eso el pendiente de etiquetar va como tarjeta aparte al final.
+  document.getElementById('outcome-grid').innerHTML = TAG_GROUPS.map(g => `
+    <div class="tag-group-title">${g.label}</div>
+    <div class="outcome-grid">${g.tags.map(t => `
+      <div class="outcome-card" onclick="goLeadsFiltered('${t.v}')">
+        <span class="badge badge-${t.c}">${esc(t.l)}</span>
+        <span class="outcome-n">${porTag[t.v] || 0}</span>
+      </div>`).join('')}</div>`).join('') + `
+    <div class="tag-group-title">Pendientes</div>
+    <div class="outcome-grid">
+      <div class="outcome-card" onclick="nav('etiquetado')">
+        <span class="badge badge-gray">Sin etiquetar</span>
+        <span class="outcome-n">${s.sin_etiquetas || 0}</span>
+      </div>
+    </div>`;
 }
 
-function goLeadsFiltered(outcome) {
-  document.getElementById('f-outcome').value = outcome;
+/* Deja solo el filtro pedido activo y limpia los demas, para que al llegar desde una
+   tarjeta del dashboard el conteo de la tabla cuadre con el de la tarjeta. */
+function goLeadsFiltered(tag) {
+  for (const g of TAG_GROUPS) {
+    document.getElementById(`f-tag-${g.key}`).value = g.key === TAG_GROUP[tag] ? tag : '';
+  }
+  document.getElementById('f-plan').value = '';
   page = 0;
   nav('leads');
+}
+
+function goLeadsPlan(estado) {
+  for (const g of TAG_GROUPS) document.getElementById(`f-tag-${g.key}`).value = '';
+  document.getElementById('f-plan').value = estado;
+  page = 0;
+  nav('leads');
+}
+
+/* Trae de mau-web el estado comercial de todos los leads. Tarda unos segundos (una
+   llamada HTTP mas un UPDATE por lead cruzado), asi que el boton se bloquea mientras. */
+async function syncPlanes() {
+  const btn = document.getElementById('sync-btn');
+  btn.disabled = true; btn.textContent = 'Sincronizando…';
+  try {
+    const r = await api('POST', '/sync-planes');
+    if (!r || r.detail) {
+      alert('No se pudo sincronizar: ' + ((r && r.detail) || 'error de conexión con MAU Comunica'));
+      return;
+    }
+    const amb = r.ambiguos ? `\n${r.ambiguos} descartados por tener el teléfono o correo repetido en varias cuentas.` : '';
+    alert(`Sincronización lista.\n\n${r.cruzados} de ${r.leads} leads cruzaron con una cuenta`
+        + ` (${r.por_telefono} por teléfono, ${r.por_correo} por correo).\n`
+        + `${r.sin_cuenta} no tienen cuenta en MAU Comunica.${amb}`);
+    loadDashboard();
+  } finally {
+    btn.disabled = false; btn.textContent = 'Sincronizar planes';
+  }
 }
 
 /* ══════════ Rango de fechas (compartido #dashboard ↔ #leads) ══════════ */
@@ -611,7 +729,7 @@ function renderRangeChip() {
 async function refreshTagBadge() {
   const s = await api('GET', '/stats');
   if (!s) return;
-  const n = s.por_outcome['nuevo'] || 0;
+  const n = s.sin_etiquetas || 0;
   const b = document.getElementById('tag-badge');
   b.style.display = n ? '' : 'none';
   b.textContent = n;
@@ -620,12 +738,34 @@ async function refreshTagBadge() {
 /* ══════════ Leads ══════════ */
 function resetAndLoad() { page = 0; loadLeads(); }
 
+/* Los filtros de etiqueta se generan desde TAG_GROUPS: uno por grupo, de seleccion unica.
+   Combinarlos filtra por interseccion ("Demo agendada" Y "Diego"), que es como se leen. */
+function renderTagFiltros() {
+  document.getElementById('tag-filtros').innerHTML = TAG_GROUPS.map(g => `
+    <label>${g.label}:</label>
+    <select id="f-tag-${g.key}" onchange="resetAndLoad()">
+      <option value="">Todos</option>
+      ${g.tags.map(t => `<option value="${t.v}">${esc(t.l)}</option>`).join('')}
+    </select>`).join('') + `
+    <label>Plan:</label>
+    <select id="f-plan" onchange="resetAndLoad()">
+      <option value="">Todos</option>
+      ${PLAN_ESTADOS.map(p => `<option value="${p.v}">${esc(p.l)}</option>`).join('')}
+    </select>`;
+}
+
+function tagsFiltro() {
+  return TAG_GROUPS.map(g => document.getElementById(`f-tag-${g.key}`).value).filter(Boolean);
+}
+
 async function loadLeads() {
-  const outcome  = document.getElementById('f-outcome').value;
+  const tags     = tagsFiltro();
   const qual     = document.getElementById('f-qualified').value;
   const sort     = document.getElementById('f-sort').value;
   const params   = new URLSearchParams({ limit: PAGE, offset: page * PAGE });
-  if (outcome) params.set('outcome', outcome);
+  const plan = document.getElementById('f-plan').value;
+  if (tags.length) params.set('tags', tags.join(','));
+  if (plan)    params.set('plan_estado', plan);
   if (qual)    params.set('qualified', qual);
   if (sort)    params.set('sort', sort);
   aplicarRango(params);
@@ -656,7 +796,7 @@ function probCell(l) {
 function renderRows(leads) {
   const tb = document.getElementById('tbody');
   if (!leads.length) {
-    tb.innerHTML = '<tr class="empty-row"><td colspan="10">Sin leads para mostrar</td></tr>';
+    tb.innerHTML = '<tr class="empty-row"><td colspan="11">Sin leads para mostrar</td></tr>';
     return;
   }
   tb.innerHTML = leads.map(l => {
@@ -669,10 +809,12 @@ function renderRows(leads) {
       <td>${probCell(l)}</td>
       <td>${l.tipo_lead ? `<span class="badge badge-blue">${esc(l.tipo_lead)}</span>` : '<span class="cell-muted">—</span>'}</td>
       <td>${l.qualified ? '<span class="badge badge-green">Sí</span>' : '<span class="badge badge-gray">No</span>'}</td>
+      <td>${planCell(l)}</td>
       <td onclick="event.stopPropagation()">
-        <select class="outcome-sel" onchange="setOutcome('${id}', this.value)">
-          ${outcomeOpts(l.outcome)}
-        </select>
+        <div class="tag-cell" id="tc-${id}">
+          <span class="tag-badges">${tagBadges(tagsOf(l))}</span>
+          <button class="btn-tag-add" title="Editar etiquetas" onclick="toggleTagPop('${id}', this)">+</button>
+        </div>
       </td>
       <td class="cell-muted">${fmtDate(l.captured_at)}</td>
       <td><button class="btn-brief" onclick="event.stopPropagation();showBrief('${id}')">Brief</button></td>
@@ -680,11 +822,122 @@ function renderRows(leads) {
   }).join('');
 }
 
-function outcomeOpts(current) {
-  return Object.entries(OUTCOME_LABELS).map(([v, l]) =>
-    `<option value="${v}" ${current === v ? 'selected' : ''}>${l}</option>`
-  ).join('');
+/* ══════════ Etiquetas ══════════ */
+/* Etiquetas vigentes por lead_id. Lo alimentan las tres vistas que muestran un picker
+   (tabla, detalle, etiquetado) para que el toggle sepa de que conjunto parte sin pedir
+   otra vez el lead al servidor. */
+const tagsCache = {};
+
+function tagsOf(lead) {
+  // outcome_tags es text[] en Postgres y asyncpg lo entrega como lista, pero un lead
+  // servido desde una version anterior podria llegar sin la clave.
+  const tags = Array.isArray(lead.outcome_tags) ? lead.outcome_tags : [];
+  tagsCache[lead.lead_id] = tags;
+  return tags;
 }
+
+function sortTags(tags) {
+  return TAG_ORDER.filter(v => tags.includes(v));
+}
+
+/* Badge del estado comercial. Debajo va la fecha de vencimiento, que es la que da el
+   matiz: "Ex-cliente" no dice lo mismo si se fue hace un mes que hace dos años. */
+function planCell(l) {
+  if (!l.plan_estado) return '<span class="cell-muted" title="Aún no se ha sincronizado">—</span>';
+  const cls = PLAN_CLASS[l.plan_estado] || 'gray';
+  const txt = PLAN_LABEL[l.plan_estado] || l.plan_estado;
+  const pie = l.plan_estado === 'sin_cuenta'
+    ? ''
+    : `<div class="plan-sub">${l.plan_expira ? 'vence ' + fmtDate(l.plan_expira) : ''}` +
+      `${l.plan_pagos ? ` · ${l.plan_pagos} pago${l.plan_pagos !== 1 ? 's' : ''}` : ''}</div>`;
+  return `<span class="badge badge-${cls}" title="${esc(l.plan_nombre || '')}">${esc(txt)}</span>${pie}`;
+}
+
+function tagBadges(tags) {
+  const orden = sortTags(tags);
+  if (!orden.length) return '<span class="cell-muted">—</span>';
+  return orden.map(v => `<span class="badge badge-${TAG_CLASS[v]}">${esc(TAG_LABEL[v])}</span>`).join(' ');
+}
+
+/* Botones toggle agrupados por categoria. ctx dice que refrescar despues de guardar. */
+function tagPicker(leadId, tags, ctx) {
+  const id = esc(leadId);
+  return `<div class="tag-picker">` + TAG_GROUPS.map(g => `
+    <div class="tag-group-title">${g.label}</div>
+    <div class="tag-btns">${g.tags.map(t => {
+      const sel = tags.includes(t.v) ? ` sel-${t.c}` : '';
+      return `<button class="btn-tag${sel}" data-tag="${t.v}" onclick="toggleTag('${id}','${t.v}','${ctx}',this)">${esc(t.l)}</button>`;
+    }).join('')}</div>`).join('') + `</div>`;
+}
+
+/* Alterna una etiqueta. El estado de partida sale de tagsCache y el servidor devuelve el
+   conjunto final ya normalizado: ese es el que se pinta. */
+async function toggleTag(leadId, tag, ctx, btn) {
+  const actuales = tagsCache[leadId] || [];
+  const nuevas = actuales.includes(tag) ? actuales.filter(t => t !== tag) : [...actuales, tag];
+  if (btn) btn.disabled = true;
+  await saveTags(leadId, nuevas, ctx);
+  if (btn) btn.disabled = false;
+}
+
+async function saveTags(leadId, tags, ctx) {
+  const res = await api('PATCH', `/leads/${leadId}/outcome`, { tags: sortTags(tags) });
+  if (!res || !res.ok) return;   // sin confirmacion del servidor no se refresca nada
+  tagsCache[leadId] = res.tags;
+  refreshTagBadge();
+  // Tabla y cola de etiquetado se repintan en sitio en vez de recargarse: lo normal es
+  // marcar varias etiquetas seguidas, y recargar cerraria el popover (tabla) o sacaria al
+  // lead de la cola (etiquetado, que lista justo los que no tienen ninguna). La cola se
+  // refresca de verdad al elegir otro lead. El detalle si se recarga: no desaparece.
+  if (ctx === 'leads') {
+    const celda = document.getElementById(`tc-${leadId}`);
+    if (celda) celda.querySelector('.tag-badges').innerHTML = tagBadges(res.tags);
+    // El picker cuelga del <body>, no de la celda, y solo hay uno abierto: el de este lead.
+    repintarBotonesTag(document.querySelector('.tag-pop'), res.tags);
+  }
+  if (ctx === 'tag')    repintarBotonesTag(document.getElementById('tag-panel'), res.tags);
+  if (ctx === 'detail') loadDetail(leadId);
+}
+
+/* Reaplica el estado seleccionado a los botones de un picker ya renderizado. */
+function repintarBotonesTag(root, tags) {
+  if (!root) return;
+  root.querySelectorAll('.btn-tag').forEach(b => {
+    const v = b.dataset.tag;
+    b.className = 'btn-tag' + (tags.includes(v) ? ` sel-${TAG_CLASS[v]}` : '');
+  });
+}
+
+/* Popover de la celda de la tabla. Solo puede haber uno abierto a la vez; el boton que lo
+   abrio queda marcado para que un segundo clic lo cierre en vez de reabrirlo. */
+const POP_W = 300, POP_MARGIN = 8;
+function toggleTagPop(leadId, btn) {
+  const yaAbierto = btn.dataset.pop === '1';
+  cerrarTagPops();
+  if (yaAbierto) return;
+
+  const pop = document.createElement('div');
+  pop.className = 'tag-pop';
+  pop.innerHTML = tagPicker(leadId, tagsCache[leadId] || [], 'leads');
+  pop.onclick = e => e.stopPropagation();   // los clics del picker no deben cerrarlo
+  document.body.appendChild(pop);
+
+  // Se ancla al boton y se mete dentro de la ventana; si no cabe abajo, se abre arriba.
+  const r = btn.getBoundingClientRect();
+  const alto = pop.offsetHeight;
+  const cabeAbajo = r.bottom + POP_MARGIN + alto <= window.innerHeight;
+  pop.style.left = `${Math.max(POP_MARGIN, Math.min(r.left, window.innerWidth - POP_W - POP_MARGIN))}px`;
+  pop.style.top = `${cabeAbajo ? r.bottom + POP_MARGIN : Math.max(POP_MARGIN, r.top - POP_MARGIN - alto)}px`;
+  btn.dataset.pop = '1';
+}
+
+function cerrarTagPops() {
+  document.querySelectorAll('.tag-pop').forEach(p => p.remove());
+  document.querySelectorAll('.btn-tag-add[data-pop]').forEach(b => delete b.dataset.pop);
+}
+// Clic fuera o scroll cierran el popover: al estar en position:fixed no sigue a su fila.
+document.addEventListener('click', cerrarTagPops);
+window.addEventListener('scroll', cerrarTagPops, true);
 
 function renderPages(total) {
   const pages = Math.ceil(total / PAGE);
@@ -699,11 +952,6 @@ function renderPages(total) {
 }
 
 function goPage(p) { page = p; loadLeads(); window.scrollTo(0, 0); }
-
-async function setOutcome(leadId, outcome) {
-  await api('PATCH', `/leads/${leadId}/outcome`, { outcome });
-  refreshTagBadge();
-}
 
 function probColor(pct) {
   if (pct >= 60) return 'var(--green)';
@@ -777,7 +1025,7 @@ async function loadDetail(leadId) {
     <div class="page-sub">
       <code>+${esc(l.lead_id)}</code> · capturado ${fmtDate(l.captured_at)} ·
       ${l.qualified ? '<span class="badge badge-green">Calificado</span>' : '<span class="badge badge-gray">No calificado</span>'}
-      <span class="badge badge-${OUTCOME_CLASS[l.outcome] || 'gray'}">${OUTCOME_LABELS[l.outcome] || esc(l.outcome)}</span>
+      ${tagBadges(tagsOf(l))}
     </div>
     <div class="detail-grid">
       <div>
@@ -792,8 +1040,12 @@ async function loadDetail(leadId) {
               : `<span class="cell-muted">Sin conversación suficiente para puntuar.</span>`)}
         </div>
         <div class="panel">
-          <div class="panel-title">Outcome</div>
-          <div class="outcome-btns">${outcomeBtns(l.lead_id, l.outcome, 'detail')}</div>
+          <div class="panel-title">Plan en MAU Comunica</div>
+          ${planPanel(l)}
+        </div>
+        <div class="panel">
+          <div class="panel-title">Etiquetas</div>
+          ${tagPicker(l.lead_id, tagsOf(l), 'detail')}
         </div>
         <div class="panel">
           <div class="panel-title">Datos del lead</div>
@@ -812,18 +1064,25 @@ async function loadDetail(leadId) {
     </div>`;
 }
 
-function outcomeBtns(leadId, current, ctx) {
-  return Object.entries(OUTCOME_LABELS).map(([v, label]) => {
-    const sel = current === v ? ` sel-${OUTCOME_CLASS[v]}` : '';
-    return `<button class="btn-outcome${sel}" onclick="setOutcomeCtx('${esc(leadId)}','${v}','${ctx}')">${label}</button>`;
-  }).join('');
-}
-
-async function setOutcomeCtx(leadId, outcome, ctx) {
-  await api('PATCH', `/leads/${leadId}/outcome`, { outcome });
-  refreshTagBadge();
-  if (ctx === 'detail') loadDetail(leadId);
-  if (ctx === 'tag') loadEtiquetado();
+/* Ficha del plan en el detalle. Es solo lectura: lo escribe el sync, no el vendedor. */
+function planPanel(l) {
+  if (!l.plan_estado) {
+    return '<span class="cell-muted">Sin sincronizar. Usa «Sincronizar planes» en el dashboard.</span>';
+  }
+  if (l.plan_estado === 'sin_cuenta') {
+    return '<span class="cell-muted">Este lead no tiene cuenta en MAU Comunica'
+         + ' (no cruzó por teléfono ni por correo).</span>';
+  }
+  const filas = [
+    ['Estado', `<span class="badge badge-${PLAN_CLASS[l.plan_estado] || 'gray'}">${esc(PLAN_LABEL[l.plan_estado] || l.plan_estado)}</span>`],
+    ['Plan', l.plan_nombre ? esc(l.plan_nombre) : '—'],
+    ['Inicio', l.plan_inicia ? fmtDate(l.plan_inicia) : '—'],
+    ['Vencimiento', l.plan_expira ? fmtDate(l.plan_expira) : '—'],
+    ['Pagos aprobados', l.plan_pagos != null ? String(l.plan_pagos) : '—'],
+    ['Cruzado por', l.plan_match === 'correo' ? 'correo' : 'teléfono'],
+    ['Sincronizado', l.plan_sync_at ? fmtDate(l.plan_sync_at) : '—'],
+  ];
+  return filas.map(([k, v]) => `<div class="field"><b>${k}</b><span>${v}</span></div>`).join('');
 }
 
 async function scoreDetail(leadId, btn) {
@@ -836,8 +1095,10 @@ async function scoreDetail(leadId, btn) {
 /* ══════════ Etiquetado ══════════ */
 async function loadEtiquetado() {
   const listEl = document.getElementById('tag-list');
+  // Sin ninguna etiqueta, no outcome='nuevo': un lead al que solo se le puso el
+  // responsable ya paso por aqui y no debe reaparecer en la cola.
   const data = await api('GET', '/leads?' + new URLSearchParams({
-    outcome: 'nuevo', has_transcript: 'true', limit: 200, offset: 0,
+    sin_etiquetas: 'true', has_transcript: 'true', limit: 200, offset: 0,
   }));
   if (!data) return;
 
@@ -875,7 +1136,7 @@ async function loadTagPanel(leadId) {
     </div>
     ${renderTranscript(l.transcript)}
     <div class="panel-title" style="margin-top:18px">¿Cuál fue el resultado?</div>
-    <div class="outcome-btns">${outcomeBtns(l.lead_id, l.outcome, 'tag')}</div>`;
+    ${tagPicker(l.lead_id, tagsOf(l), 'tag')}`;
 }
 
 /* ══════════ Brief (documento estructurado) ══════════ */
@@ -936,6 +1197,7 @@ function closeBrief() { document.getElementById('brief-overlay').classList.remov
 document.getElementById('brief-overlay').addEventListener('click', e => { if (e.target === e.currentTarget) closeBrief(); });
 
 // Init
+renderTagFiltros();   // antes de cualquier route(): loadLeads() lee esos desplegables
 if (token()) {
   document.getElementById('auth-overlay').classList.remove('open');
   route();

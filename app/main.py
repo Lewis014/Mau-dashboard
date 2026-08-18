@@ -25,11 +25,72 @@ SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", str(12 * 3600)))
 _SECRET = (os.getenv("SECRET_KEY") or APP_TOKEN or ADMIN_PASS).encode()
 bearer_scheme = HTTPBearer(auto_error=False)
 
-VALID_OUTCOMES = {"nuevo", "en_seguimiento", "demo_agendada", "trial_iniciado", "cliente", "perdido"}
+# Etiquetas de lead, agrupadas por categoria. Un lead puede llevar varias a la vez y de
+# grupos distintos ("demo agendada" + "diego" + "meta"): por eso no son un enum sino un
+# text[]. Este dict es la unica fuente de verdad del backend; el orden importa porque es
+# el que se usa al normalizar la lista que manda la UI.
+TAG_GROUPS: dict[str, list[str]] = {
+    "estado": [
+        "lead_interesado", "llamada", "llamada_no_responde", "insistir",
+        "demo_agendada", "demo_realizada", "cotizacion", "free_trial",
+        "cliente", "perdido",
+    ],
+    "responsable": ["alyssa", "diego", "jhon"],
+    "canal": ["meta", "organico", "tiktok"],
+}
+VALID_TAGS = {t for tags in TAG_GROUPS.values() for t in tags}
+
+# Embudo, del final hacia atras: la primera etiqueta que aparezca aqui es el "estado
+# principal" que se guarda en outcome. 'perdido' va segundo a proposito — un lead con
+# free_trial + perdido se fugo, y el modelo de la tesis tiene que contarlo como negativo.
+OUTCOME_PRIORITY = (
+    "cliente", "perdido", "free_trial", "cotizacion", "demo_realizada",
+    "demo_agendada", "llamada", "insistir", "lead_interesado", "llamada_no_responde",
+)
+
+# Equivalencias de las etiquetas viejas (columna outcome de un solo valor) a las nuevas.
+# Las que no aparecen aqui conservan su slug: demo_agendada, cliente y perdido.
+OUTCOME_LEGACY = {"trial_iniciado": "free_trial", "en_seguimiento": "insistir"}
+
+# Estado comercial que trae el sync desde mau-web, y la etiqueta que le corresponde.
+# El sync manda SOLO sobre estas tres etiquetas (PLAN_TAGS) y solo en los leads que
+# cruzaron con una cuenta: el resto es trabajo del vendedor y no se toca.
+#
+# 'ex_cliente' lleva cliente y no perdido a proposito: convirtio, y eso es un hecho que el
+# modelo de la tesis cuenta como positivo. Que se haya ido se ve en la columna Plan.
+PLAN_ESTADO_TAG = {
+    "cliente_activo": "cliente",
+    "ex_cliente": "cliente",
+    "pago_en_verificacion": None,   # pago subido sin aprobar: todavia no es conversion
+    "trial_activo": "free_trial",
+    "trial_vencido": "perdido",     # probo y no compro: el negativo que le faltaba al modelo
+    "sin_cuenta": None,             # nunca se registro en la web; no se toca su etiquetado
+}
+PLAN_TAGS = {t for t in PLAN_ESTADO_TAG.values() if t}
+
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 # Zona horaria del negocio: captured_at es timestamptz y el contenedor corre en UTC,
 # asi que los filtros por dia se evaluan aqui para que "12 de agosto" sea el dia peruano.
 LOCAL_TZ = os.getenv("LOCAL_TZ", "America/Lima")
+
+
+def primary_outcome(tags: list[str]) -> str:
+    """Estado principal derivado de las etiquetas (el mas avanzado del embudo).
+
+    Se guarda en la columna outcome, que deja de editarse a mano: existe para que el KPI
+    de clientes y el pipeline de la tesis sigan teniendo un valor unico por lead.
+    Sin ninguna etiqueta de estado el lead esta 'nuevo' (pendiente de etiquetar).
+    """
+    return next((o for o in OUTCOME_PRIORITY if o in tags), "nuevo")
+
+
+def normalize_tags(tags: list[str]) -> list[str]:
+    """Valida contra VALID_TAGS y devuelve la lista sin duplicados, en orden de TAG_GROUPS."""
+    invalidas = sorted(set(tags) - VALID_TAGS)
+    if invalidas:
+        raise HTTPException(status_code=400, detail=f"Etiquetas inválidas: {', '.join(invalidas)}")
+    elegidas = set(tags)
+    return [t for grupo in TAG_GROUPS.values() for t in grupo if t in elegidas]
 
 
 def _sign(payload: str) -> str:
@@ -67,9 +128,44 @@ def check_auth(creds: Optional[HTTPAuthorizationCredentials] = Security(bearer_s
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await db.create_pool()
+    pool = db.get_pool()
     # Asegura la columna del score ML (idempotente) para que la lista y el scoring la usen.
-    await db.get_pool().execute(
-        "ALTER TABLE leads_dataset ADD COLUMN IF NOT EXISTS conversion_prob real"
+    await pool.execute("ALTER TABLE leads_dataset ADD COLUMN IF NOT EXISTS conversion_prob real")
+    # Etiquetas multiples. El GIN es para el operador @> del filtro de la tabla de leads.
+    await pool.execute(
+        "ALTER TABLE leads_dataset ADD COLUMN IF NOT EXISTS outcome_tags text[] NOT NULL DEFAULT '{}'"
+    )
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_leads_outcome_tags ON leads_dataset USING GIN (outcome_tags)"
+    )
+    # Estado comercial que trae el sync desde mau-web (ver app/sync_planes.py).
+    await pool.execute(
+        """
+        ALTER TABLE leads_dataset
+          ADD COLUMN IF NOT EXISTS plan_estado  text,
+          ADD COLUMN IF NOT EXISTS plan_nombre  text,
+          ADD COLUMN IF NOT EXISTS plan_inicia  timestamptz,
+          ADD COLUMN IF NOT EXISTS plan_expira  timestamptz,
+          ADD COLUMN IF NOT EXISTS plan_pagos   integer,
+          ADD COLUMN IF NOT EXISTS plan_user_id integer,
+          ADD COLUMN IF NOT EXISTS plan_match   text,
+          ADD COLUMN IF NOT EXISTS plan_sync_at timestamptz
+        """
+    )
+    # Migra el outcome unico de cada lead a su etiqueta equivalente. Es idempotente: solo
+    # toca filas todavia sin etiquetar, y vaciar las etiquetas desde el dashboard devuelve
+    # outcome a 'nuevo', asi que un borrado deliberado no revive en el siguiente arranque.
+    # El ->> busca el outcome viejo en OUTCOME_LEGACY (pasado como jsonb) y cae al propio
+    # valor cuando no esta, en vez de repetir aqui el mapeo que ya vive en Python.
+    await pool.execute(
+        """
+        UPDATE leads_dataset
+           SET outcome_tags = ARRAY[COALESCE($1::jsonb->>outcome, outcome)]
+         WHERE cardinality(outcome_tags) = 0
+           AND outcome = ANY($2::text[])
+        """,
+        json.dumps(OUTCOME_LEGACY),
+        list(OUTCOME_LEGACY) + ["demo_agendada", "cliente", "perdido"],
     )
     yield
     await db.close_pool()
@@ -79,7 +175,10 @@ app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None)
 
 
 class OutcomeBody(BaseModel):
-    outcome: str
+    # El dashboard manda siempre el conjunto completo (reemplazo, no incremento).
+    # outcome es el formato legado de un solo valor; se acepta para no romper a n8n/scripts.
+    tags: Optional[list[str]] = None
+    outcome: Optional[str] = None
 
 
 class LoginBody(BaseModel):
@@ -158,7 +257,8 @@ async def stats(
         SELECT
           COUNT(*)                                            AS total,
           COUNT(*) FILTER (WHERE qualified)                   AS calificados,
-          COUNT(*) FILTER (WHERE outcome = 'cliente')         AS clientes,
+          COUNT(*) FILTER (WHERE outcome_tags @> ARRAY['cliente'])  AS clientes,
+          COUNT(*) FILTER (WHERE cardinality(outcome_tags) = 0)     AS sin_etiquetas,
           AVG(conversion_prob)                                AS prob_promedio,
           COUNT(*) FILTER (WHERE conversion_prob IS NOT NULL) AS con_score,
           COUNT(*) FILTER (WHERE transcript IS NOT NULL)      AS con_transcript
@@ -166,6 +266,16 @@ async def stats(
         {where}
         """,
         *args,
+    )
+    # unnest descarta las filas con array vacio: eso es correcto para contar etiquetas
+    # (el pendiente de etiquetar se cuenta aparte, en sin_etiquetas).
+    por_tag = await pool.fetch(
+        f"SELECT t AS tag, COUNT(*) AS n FROM leads_dataset, unnest(outcome_tags) AS t {where} GROUP BY t",
+        *args,
+    )
+    planes = await pool.fetch(
+        f"SELECT plan_estado, COUNT(*) AS n FROM leads_dataset {where} "
+        "AND plan_estado IS NOT NULL GROUP BY plan_estado", *args
     )
     outcomes = await pool.fetch(
         f"SELECT outcome, COUNT(*) AS n FROM leads_dataset {where} GROUP BY outcome", *args
@@ -179,9 +289,12 @@ async def stats(
         "total": row["total"],
         "calificados": row["calificados"],
         "clientes": row["clientes"],
+        "sin_etiquetas": row["sin_etiquetas"],
         "prob_promedio": float(row["prob_promedio"]) if row["prob_promedio"] is not None else None,
         "con_score": row["con_score"],
         "con_transcript": row["con_transcript"],
+        "por_tag": {r["tag"]: r["n"] for r in por_tag},
+        "por_plan_estado": {r["plan_estado"]: r["n"] for r in planes},
         "por_outcome": {r["outcome"]: r["n"] for r in outcomes},
         "primer_lead": primer.isoformat() if primer else None,
     }
@@ -189,6 +302,9 @@ async def stats(
 
 @app.get("/api/leads")
 async def list_leads(
+    tags: Optional[str] = Query(None, description="Etiquetas separadas por coma; el lead debe tenerlas todas"),
+    sin_etiquetas: Optional[str] = Query(None),
+    plan_estado: Optional[str] = Query(None),
     outcome: Optional[str] = Query(None),
     qualified: Optional[str] = Query(None),
     has_transcript: Optional[str] = Query(None),
@@ -205,7 +321,18 @@ async def list_leads(
     conditions: list[str] = ["is_test = false"]
     args: list = []
 
-    if outcome and outcome in VALID_OUTCOMES:
+    # AND entre etiquetas: los desplegables de la barra son de grupos distintos, y
+    # "Demo agendada" + "Diego" se lee como los leads que cumplen ambas.
+    pedidas = [t for t in (tags or "").split(",") if t in VALID_TAGS]
+    if pedidas:
+        conditions.append(f"outcome_tags @> ${len(args) + 1}::text[]")
+        args.append(pedidas)
+    if sin_etiquetas == "true":
+        conditions.append("cardinality(outcome_tags) = 0")
+    if plan_estado in PLAN_ESTADO_TAG:
+        conditions.append(f"plan_estado = ${len(args) + 1}")
+        args.append(plan_estado)
+    if outcome:  # filtro por el estado principal derivado
         conditions.append(f"outcome = ${len(args) + 1}")
         args.append(outcome)
     if qualified in ("true", "false"):
@@ -249,19 +376,26 @@ async def get_lead(lead_id: str, _=Depends(check_auth)):
 
 @app.patch("/api/leads/{lead_id}/outcome")
 async def update_outcome(lead_id: str, body: OutcomeBody, _=Depends(check_auth)):
-    if body.outcome not in VALID_OUTCOMES:
-        raise HTTPException(status_code=400, detail="Invalid outcome value")
+    """Reemplaza el conjunto de etiquetas del lead y recalcula su estado principal."""
+    if body.tags is not None:
+        crudas = body.tags
+    elif body.outcome in (None, "nuevo"):  # 'nuevo' legado = sin etiquetas
+        crudas = []
+    else:  # formato legado de un solo valor
+        crudas = [OUTCOME_LEGACY.get(body.outcome, body.outcome)]
+    tags = normalize_tags(crudas)
 
     pool = db.get_pool()
     result = await pool.execute(
-        "UPDATE leads_dataset SET outcome=$1, outcome_date=NOW(), outcome_source='manual', updated_at=NOW() "
-        "WHERE lead_id=$2",
-        body.outcome,
+        "UPDATE leads_dataset SET outcome_tags=$1, outcome=$2, outcome_date=NOW(), "
+        "outcome_source='manual', updated_at=NOW() WHERE lead_id=$3",
+        tags,
+        primary_outcome(tags),
         lead_id,
     )
     if result == "UPDATE 0":
         raise HTTPException(status_code=404, detail="Lead not found")
-    return {"ok": True}
+    return {"ok": True, "tags": tags, "outcome": primary_outcome(tags)}
 
 
 def _es_lead_grande(lead: dict) -> bool:
@@ -332,6 +466,22 @@ async def generate_brief(lead_id: str, _=Depends(check_auth)):
     if not row:
         raise HTTPException(status_code=404, detail="Lead not found")
     return {"brief": build_brief(db.row_to_dict(row))}
+
+
+@app.post("/api/sync-planes")
+async def sync_planes(_=Depends(check_auth)):
+    """Trae de mau-web el estado comercial de cada lead y reetiqueta en consecuencia.
+
+    El import va aqui dentro y no arriba: sync_planes importa de este modulo, y al nivel
+    del fichero seria un ciclo.
+    """
+    from app.sync_planes import sincronizar
+
+    try:
+        async with db.get_pool().acquire() as conn:
+            return await sincronizar(conn)
+    except RuntimeError as e:  # falta el token, o mau-web respondio con error
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 @app.post("/api/leads/{lead_id}/score")
