@@ -1,5 +1,6 @@
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 asyncpg==0.29.0
+tzdata==2024.1          # base de zonas horarias: python:3.12-slim no la trae
 anthropic>=0.40.0
 openai>=1.40.0

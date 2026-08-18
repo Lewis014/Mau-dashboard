@@ -6,8 +6,9 @@ import hashlib
 import hmac
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import FastAPI, HTTPException, Depends, Query, Security
 from fastapi.responses import FileResponse
@@ -72,6 +73,56 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 # Zona horaria del negocio: captured_at es timestamptz y el contenedor corre en UTC,
 # asi que los filtros por dia se evaluan aqui para que "12 de agosto" sea el dia peruano.
 LOCAL_TZ = os.getenv("LOCAL_TZ", "America/Lima")
+
+# Hora local a la que se sincronizan los planes con mau-web cada dia. -1 lo desactiva.
+# Una vez al dia sobra: las pruebas duran 15 dias y los pagos los aprueba un admin a mano,
+# no hay nada que cambie mas rapido.
+SYNC_PLANES_HORA = int(os.getenv("SYNC_PLANES_HORA", "7"))
+
+
+def _tz_local():
+    """Zona horaria del negocio, con respaldo si la imagen no trae la base de zonas.
+
+    python:3.12-slim no incluye tzdata; va en requirements.txt, pero si faltara no puede
+    tumbar el arranque por una tarea de fondo. Peru es UTC-5 fijo y sin horario de verano,
+    asi que el respaldo es exacto para el valor por defecto.
+    """
+    try:
+        return ZoneInfo(LOCAL_TZ)
+    except (ZoneInfoNotFoundError, KeyError, ValueError):
+        return timezone(timedelta(hours=-5))
+
+
+def _segundos_hasta(hora: int) -> float:
+    """Segundos hasta la proxima vez que den las `hora`:00 locales (manana si ya paso)."""
+    ahora = datetime.now(_tz_local())
+    objetivo = ahora.replace(hour=hora, minute=0, second=0, microsecond=0)
+    if objetivo <= ahora:
+        objetivo += timedelta(days=1)
+    return (objetivo - ahora).total_seconds()
+
+
+async def _sync_planes_diario():
+    """Trae de mau-web el estado comercial una vez al dia.
+
+    Sin esto los datos se congelan: una prueba que vence hoy seguiria figurando como activa
+    hasta que alguien pulsara el boton. Los fallos se registran y se reintenta al dia
+    siguiente; nunca tumban la app, que la sincronizacion es accesoria.
+    """
+    from app.sync_planes import sincronizar
+
+    while True:
+        await asyncio.sleep(_segundos_hasta(SYNC_PLANES_HORA))
+        try:
+            async with db.get_pool().acquire() as conn:
+                r = await sincronizar(conn)
+            print(f"[sync-planes] {r['cruzados']}/{r['leads']} leads cruzados "
+                  f"(telefono={r['por_telefono']} correo={r['por_correo']} "
+                  f"sin_cuenta={r['sin_cuenta']}) | {r['por_estado']}", flush=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 — mau-web caido, token malo, red...
+            print(f"[sync-planes] fallo: {e}", flush=True)
 
 
 def primary_outcome(tags: list[str]) -> str:
@@ -167,7 +218,20 @@ async def lifespan(app: FastAPI):
         json.dumps(OUTCOME_LEGACY),
         list(OUTCOME_LEGACY) + ["demo_agendada", "cliente", "perdido"],
     )
+
+    # Sincronizacion diaria con mau-web. Sin token no se programa: el dashboard funciona
+    # igual, solo que el estado comercial se queda como lo dejo la ultima ejecucion manual.
+    tarea_sync = None
+    if SYNC_PLANES_HORA >= 0 and os.getenv("MAUWEB_API_TOKEN"):
+        tarea_sync = asyncio.create_task(_sync_planes_diario())
+        print(f"[sync-planes] programado a las {SYNC_PLANES_HORA:02d}:00 {LOCAL_TZ}", flush=True)
+    elif SYNC_PLANES_HORA >= 0:
+        print("[sync-planes] desactivado: falta MAUWEB_API_TOKEN", flush=True)
+
     yield
+
+    if tarea_sync:
+        tarea_sync.cancel()
     await db.close_pool()
 
 
