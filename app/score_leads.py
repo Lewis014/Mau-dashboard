@@ -73,6 +73,7 @@ async def run(args: argparse.Namespace) -> None:
             ok += 1
 
         print(f"\nResumen: puntuados={ok}  errores={err}")
+        return {"puntuados": ok, "errores": err}
     finally:
         await conn.close()
 

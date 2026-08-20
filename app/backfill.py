@@ -34,6 +34,7 @@ Env relevante:
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import urllib.parse
@@ -313,6 +314,11 @@ ON CONFLICT (lead_id) DO UPDATE SET
     message_count        = EXCLUDED.message_count,
     canal                = COALESCE(NULLIF(EXCLUDED.canal, ''), leads_dataset.canal),
     transcript           = EXCLUDED.transcript,
+    -- Si la conversacion cambio, el score viejo se calculo con un texto incompleto y ya no
+    -- vale: se anula para que score_leads (que busca justo los NULL) lo recalcule solo. Sin
+    -- esto el porcentaje se quedaba viejo para siempre y sin forma de saber cuales.
+    conversion_prob      = CASE WHEN leads_dataset.transcript IS DISTINCT FROM EXCLUDED.transcript
+                                THEN NULL ELSE leads_dataset.conversion_prob END,
     is_test              = leads_dataset.is_test OR EXCLUDED.is_test,
     updated_at           = NOW()
 -- NO se tocan: outcome_tags, outcome (derivado de ellas), outcome_date, outcome_source,
@@ -340,11 +346,22 @@ async def upsert_lead(conn: asyncpg.Connection, lead_id: str, session_id: str,
 
 # ── Procesamiento comun (independiente de la fuente) ─────────────────────────
 
+def _huella(transcript: str) -> str:
+    """Hash del transcript, para detectar si la conversacion cambio sin guardar el texto."""
+    return hashlib.sha1((transcript or "").encode("utf-8")).hexdigest()
+
+
 async def process_one(args, conn, client, lead_id, transcript, total, substantive, c,
                       first_ts: Optional[float] = None) -> None:
     session_id = SESSION_PREFIX + lead_id
     if getattr(args, "skip_existing", False) and lead_id in args._existing:
         c["exist"] = c.get("exist", 0) + 1
+        return
+    # Conversacion identica a la ya guardada: re-extraer daria lo mismo y cuesta una llamada
+    # a Claude por lead. Es lo que hace que la pasada diaria salga casi gratis: solo paga por
+    # lo nuevo y por lo que de verdad siguio hablando.
+    if not getattr(args, "reextraer", False) and _huella(transcript) == args._huellas.get(lead_id):
+        c["igual"] = c.get("igual", 0) + 1
         return
     if substantive < MIN_SUBSTANTIVE_HUMAN_TURNS:
         print(f"[skip] {lead_id}: {substantive} turnos humanos sustantivos (< {MIN_SUBSTANTIVE_HUMAN_TURNS})")
@@ -470,6 +487,16 @@ async def run(args: argparse.Namespace) -> None:
         args._existing = {r["lead_id"] for r in rows}
         print(f"skip-existing: {len(args._existing)} leads ya tienen transcript, se omitiran.\n")
 
+    # Huella del transcript guardado de cada lead, para no re-extraer lo que no cambio.
+    args._huellas = {}
+    if not getattr(args, "reextraer", False):
+        args._huellas = {
+            r["lead_id"]: _huella(r["transcript"])
+            for r in await conn.fetch(
+                "SELECT lead_id, transcript FROM leads_dataset WHERE transcript IS NOT NULL"
+            )
+        }
+
     try:
         if args.source == "chatwoot":
             await run_chatwoot(args, conn, client, c)
@@ -482,9 +509,12 @@ async def run(args: argparse.Namespace) -> None:
 
         humano = c.get("humano", 0)
         exist = c.get("exist", 0)
-        print(f"\nResumen: procesados={c['ok']}  saltados={c['skip']}  errores={c['err']}"
+        igual = c.get("igual", 0)
+        print(f"\nResumen: procesados={c['ok']}  sin-cambios={igual}  saltados={c['skip']}"
+              f"  errores={c['err']}"
               + (f"  ya-existentes={exist}" if args.skip_existing else "")
               + (f"  | con intervencion humana={humano}" if args.source == "chatwoot" else ""))
+        return c
     finally:
         await conn.close()
 
@@ -498,6 +528,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--only-lead", type=str, default=None, help="Procesa solo este telefono (lead_id).")
     p.add_argument("--skip-existing", action="store_true",
                    help="Omite leads que ya tienen transcript (solo procesa los nuevos; ahorra llamadas a Claude).")
+    p.add_argument("--reextraer", action="store_true",
+                   help="Re-extrae aunque la conversacion no haya cambiado (util si cambio el prompt o el modelo).")
     return p.parse_args()
 
 

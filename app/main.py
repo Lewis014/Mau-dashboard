@@ -28,7 +28,7 @@ _SECRET = (os.getenv("SECRET_KEY") or APP_TOKEN or ADMIN_PASS).encode()
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
-def _parse_usuarios(raw: str) -> dict[str, str]:
+def parse_pares(raw: str) -> dict[str, str]:
     """'alyssa:clave,diego:otra' -> {'alyssa': 'clave', 'diego': 'otra'}.
 
     Cada vendedor entra con su propio usuario para que el autor de una nota sea un hecho
@@ -47,7 +47,7 @@ def _parse_usuarios(raw: str) -> dict[str, str]:
     return usuarios
 
 
-DASHBOARD_USERS = _parse_usuarios(os.getenv("DASHBOARD_USERS", ""))
+DASHBOARD_USERS = parse_pares(os.getenv("DASHBOARD_USERS", ""))
 
 # Etiquetas de lead, agrupadas por categoria. Un lead puede llevar varias a la vez y de
 # grupos distintos ("demo agendada" + "diego" + "meta"): por eso no son un enum sino un
@@ -147,31 +147,75 @@ def _segundos_hasta(hora: int) -> float:
     return (objetivo - ahora).total_seconds()
 
 
-async def _tareas_diarias():
-    """Sincroniza el estado comercial con mau-web y despues evalua las alertas.
+def _en_hilo(corutina_factory):
+    """Corre una corutina bloqueante en su propio hilo y bucle.
 
-    Sin la sincronizacion los datos se congelan: una prueba que vence hoy seguiria figurando
-    como activa hasta que alguien pulsara el boton. Las alertas van DESPUES y en el mismo
-    ciclo a proposito: avisar de vencimientos leyendo la foto de ayer es peor que no avisar.
-
-    Los fallos se registran y se reintenta al dia siguiente; nunca tumban la app, que ambas
-    tareas son accesorias.
+    backfill y score_leads usan urllib y los clientes sincronos de Anthropic/OpenAI: si se
+    ejecutaran en el bucle de la app, el dashboard se quedaria colgado los minutos que dura
+    la pasada por Chatwoot. Cada uno abre ademas su propia conexion a Postgres, asi que
+    aislarlos en un hilo con su bucle propio no comparte nada con el de la app.
     """
+    return asyncio.to_thread(lambda: asyncio.run(corutina_factory()))
+
+
+async def _tareas_diarias():
+    """Pasada diaria: traer conversaciones -> puntuarlas -> estado comercial -> alertas.
+
+    El orden no es casual, cada paso alimenta al siguiente: el backfill trae lo nuevo de
+    Chatwoot y anula el score de las conversaciones que siguieron, el scoring rellena justo
+    esos huecos, el sync actualiza planes y etiquetas, y las alertas se evaluan al final
+    sobre datos frescos. Avisar de vencimientos leyendo la foto de ayer es peor que no avisar.
+
+    Cada paso va en su propio try: que Chatwoot este caido no debe impedir sincronizar con
+    mau-web ni mandar las alertas. Los fallos se registran y se reintenta al dia siguiente;
+    nunca tumban la app, porque todas estas tareas son accesorias.
+    """
+    import argparse
+
     from app.alertas import revisar_y_avisar
+    from app.backfill import run as correr_backfill
+    from app.score_leads import run as correr_scoring
     from app.sync_planes import sincronizar
 
     while True:
         await asyncio.sleep(_segundos_hasta(SYNC_PLANES_HORA))
-        try:
-            async with db.get_pool().acquire() as conn:
-                r = await sincronizar(conn)
-            print(f"[sync-planes] {r['cruzados']}/{r['leads']} leads cruzados "
-                  f"(telefono={r['por_telefono']} correo={r['por_correo']} "
-                  f"sin_cuenta={r['sin_cuenta']}) | {r['por_estado']}", flush=True)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:  # noqa: BLE001 — mau-web caido, token malo, red...
-            print(f"[sync-planes] fallo: {e}", flush=True)
+
+        # Sin ANTHROPIC_API_KEY no hay extraccion posible; se salta en vez de fallar 583 veces.
+        if os.getenv("ANTHROPIC_API_KEY"):
+            try:
+                opciones = argparse.Namespace(source="chatwoot", dry_run=False, limit=0,
+                                              only_lead=None, skip_existing=False, reextraer=False)
+                c = await _en_hilo(lambda: correr_backfill(opciones))
+                print(f"[backfill] nuevos/cambiados={c['ok']} sin-cambios={c.get('igual', 0)} "
+                      f"descartados={c['skip']} errores={c['err']}", flush=True)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001 — Chatwoot caido, cuota de Claude...
+                print(f"[backfill] fallo: {e}", flush=True)
+
+        # Puntua solo los que tienen conversion_prob NULL: los nuevos y aquellos cuyo
+        # transcript cambio (el upsert del backfill se lo acaba de anular).
+        if os.getenv("OPENAI_API_KEY"):
+            try:
+                s = await _en_hilo(lambda: correr_scoring(
+                    argparse.Namespace(all=False, only_lead=None, dry_run=False)))
+                print(f"[scoring] puntuados={s['puntuados']} errores={s['errores']}", flush=True)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001 — OpenAI caido, modelo ausente...
+                print(f"[scoring] fallo: {e}", flush=True)
+
+        if os.getenv("MAUWEB_API_TOKEN"):
+            try:
+                async with db.get_pool().acquire() as conn:
+                    r = await sincronizar(conn)
+                print(f"[sync-planes] {r['cruzados']}/{r['leads']} leads cruzados "
+                      f"(telefono={r['por_telefono']} correo={r['por_correo']} "
+                      f"sin_cuenta={r['sin_cuenta']}) | {r['por_estado']}", flush=True)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001 — mau-web caido, token malo, red...
+                print(f"[sync-planes] fallo: {e}", flush=True)
 
         try:
             async with db.get_pool().acquire() as conn:
@@ -409,15 +453,20 @@ async def lifespan(app: FastAPI):
         print(f"[login] aviso: {', '.join(ajenos)} no figuran como responsables; "
               f"sus notas apareceran firmadas con ese nombre igual", flush=True)
 
-    # Tareas diarias (sync + alertas). Sin token de mau-web no se programan: el dashboard
-    # funciona igual, solo que el estado comercial se queda como lo dejo la ultima
-    # ejecucion manual, y sin estado fresco las alertas no tendrian de que avisar.
+    # Pasada diaria: backfill -> scoring -> sync -> alertas. Se programa siempre; cada paso
+    # decide por su cuenta si puede correr segun la clave que necesite, porque no dependen
+    # entre si: que falte el token de mau-web no es motivo para dejar de traer conversaciones.
     tarea_sync = None
-    if SYNC_PLANES_HORA >= 0 and os.getenv("MAUWEB_API_TOKEN"):
+    if SYNC_PLANES_HORA >= 0:
         tarea_sync = asyncio.create_task(_tareas_diarias())
-        print(f"[sync-planes] programado a las {SYNC_PLANES_HORA:02d}:00 {LOCAL_TZ}", flush=True)
-    elif SYNC_PLANES_HORA >= 0:
-        print("[sync-planes] desactivado: falta MAUWEB_API_TOKEN", flush=True)
+        pasos = [n for n, ok in (("backfill", os.getenv("ANTHROPIC_API_KEY")),
+                                 ("scoring", os.getenv("OPENAI_API_KEY")),
+                                 ("sync-planes", os.getenv("MAUWEB_API_TOKEN")),
+                                 ("alertas", True)) if ok]
+        print(f"[diario] programado a las {SYNC_PLANES_HORA:02d}:00 {LOCAL_TZ} "
+              f"-> {' > '.join(pasos)}", flush=True)
+    else:
+        print("[diario] desactivado (SYNC_PLANES_HORA=-1)", flush=True)
 
     from app.alertas import estado_config
     print(f"[alertas] {estado_config()}", flush=True)

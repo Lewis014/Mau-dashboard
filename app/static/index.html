@@ -42,6 +42,14 @@
     .search .clr:hover { opacity: 1; }
     @media (max-width: 720px) { .search { display: none; } }
 
+    /* ── Campanita ── */
+    .bell { position: relative; border: none; background: none; color: white; cursor: pointer; padding: 6px; line-height: 0; border-radius: 8px; opacity: 0.9; }
+    .bell:hover { background: rgba(255,255,255,0.14); opacity: 1; }
+    .bell svg { width: 19px; height: 19px; display: block; }
+    /* El contador NO se puede marcar como leido: baja cuando el lead se resuelve, no cuando
+       le das clic. Un aviso que se puede silenciar enseña a silenciarlo. */
+    .bell-badge { position: absolute; top: -1px; right: -2px; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px; background: var(--red); color: white; font: 700 10.5px/17px -apple-system, 'Segoe UI', sans-serif; text-align: center; }
+
     /* ── Layout ── */
     .layout { display: flex; padding-top: var(--header-h); min-height: 100vh; }
     aside { width: var(--sidebar-w); background: white; border-right: 1px solid var(--gray-200); position: fixed; top: var(--header-h); bottom: 0; left: 0; overflow-y: auto; padding: 18px 12px; }
@@ -243,11 +251,6 @@
     .sp-form input, .nota-form textarea { border: 1px solid var(--gray-200); border-radius: 7px; padding: 8px 10px; font-size: 13px; font-family: inherit; color: var(--gray-800); width: 100%; }
     .sp-form input:focus, .nota-form textarea:focus { outline: 2px solid var(--brand-accent); border-color: transparent; }
     .nota-form textarea { resize: vertical; min-height: 76px; line-height: 1.5; }
-    /* La regla de uso vive pegada al campo, no en un manual aparte: si hay que ir a
-       buscarla, no se lee, y el campo se llena de cosas que ya son etiquetas. */
-    .nota-regla { background: var(--amber-light); border: 1px solid var(--amber); border-radius: 8px; padding: 10px 12px; font-size: 11.5px; line-height: 1.6; color: var(--brown); margin-top: 10px; }
-    .nota-regla b { color: var(--brown); }
-    .nota-regla p + p { margin-top: 6px; }
     .nota-list { margin-top: 16px; display: flex; flex-direction: column; gap: 12px; max-height: 420px; overflow-y: auto; }
     .nota { border-left: 3px solid var(--brand-light); padding: 1px 0 1px 10px; }
     .nota-meta { font-size: 11px; color: var(--gray-500); margin-bottom: 3px; }
@@ -281,9 +284,11 @@
     /* Va despues de `.auth-form input` a proposito: misma especificidad, gana el ultimo.
        Sin el hueco, el texto de la contraseña pasa por debajo del icono. */
     .pw-wrap input { padding-right: 40px; }
-    .pw-ojo { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); border: none; background: none; cursor: pointer; font-size: 15px; line-height: 1; padding: 5px; opacity: 0.5; }
-    .pw-ojo:hover { opacity: 1; }
-    .pw-ojo:focus-visible { outline: 2px solid var(--brand-accent); border-radius: 5px; opacity: 1; }
+    .pw-ojo { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); border: none; background: none; cursor: pointer; line-height: 0; padding: 4px; color: var(--gray-400); }
+    .pw-ojo:hover { color: var(--gray-600); }
+    .pw-ojo:focus-visible { outline: 2px solid var(--brand-accent); border-radius: 5px; color: var(--gray-600); }
+    /* stroke=currentColor en el SVG: el icono sigue al color del boton, sin duplicar valores. */
+    .pw-ojo svg { width: 17px; height: 17px; display: block; }
   </style>
 </head>
 <body>
@@ -303,6 +308,10 @@
   <!-- Quien esta dentro va a la vista: las notas se firman solas, y sin esto nadie se da
        cuenta de que quedo abierta la sesion de otro hasta despues de escribirlas. -->
   <div id="header-user" style="display:none;align-items:center;gap:12px">
+    <button class="bell" id="bell" onclick="verAlertas()" title="Alertas de hoy">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+      <span class="bell-badge" id="bell-badge" style="display:none"></span>
+    </button>
     <span id="user-chip" style="font-size:13px;opacity:0.9;white-space:nowrap"></span>
     <button class="btn-sm" onclick="openClave()">Cambiar contraseña</button>
     <button class="btn-sm" onclick="logout()">Cerrar sesión</button>
@@ -606,6 +615,11 @@ function renderUsuario() {
   document.querySelector('.search').style.display = u ? '' : 'none';
 }
 
+/* Iconos del ojo, en SVG y no en emoji: heredan el color del boton con currentColor y se
+   ven igual en cualquier sistema, en vez de depender de como pinte cada uno los emoji. */
+const SVG_OJO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+const SVG_OJO_TACHADO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+
 /* Ojo para ver lo que se escribe en los campos de contraseña. Se aplica de una vez a todos
    (el del login y los tres del cambio) en lugar de repetir el mismo marcado cuatro veces.
    Importa cuando la contraseña la escribe otra persona al dictado, que es justo el caso de
@@ -625,7 +639,8 @@ function montarOjosClave() {
     btn.tabIndex = -1;   // fuera del recorrido con Tab: estorba entre usuario y contraseña
     const pintar = () => {
       const oculta = inp.type === 'password';
-      btn.textContent = oculta ? '👁' : '🙈';
+      btn.innerHTML = oculta ? SVG_OJO : SVG_OJO_TACHADO;
+      // Sin texto dentro del boton, title y aria-label son la unica pista de que hace.
       btn.title = btn.ariaLabel = oculta ? 'Mostrar contraseña' : 'Ocultar contraseña';
     };
     btn.onclick = () => {
@@ -777,6 +792,7 @@ function route() {
   if (v === 'detail') loadDetail(param);
   if (v === 'etiquetado') loadEtiquetado();
   refreshTagBadge();
+  renderCampana();   // usa la cache: no reevalua en cada cambio de vista
 }
 window.addEventListener('hashchange', route);
 
@@ -877,57 +893,140 @@ function goLeadsSeguimiento(valor) {
 
 /* ══════════ Alertas automáticas ══════════ */
 
-/* La regla queda escrita en la pantalla, con los umbrales REALES que devuelve el servidor
-   y no unos numeros copiados a mano aqui: si alguien cambia ALERTAS_TRIAL_DIAS, lo que se
-   lee en el dashboard cambia con el. */
+/* Una sola consulta alimenta la campanita y el panel del dashboard. Se guarda unos minutos
+   porque route() se dispara en cada cambio de vista y no hace falta reevaluar tan seguido:
+   los datos los refresca el sync una vez al día. */
+let alertasCache = { at: 0, datos: null };
+let alertasEnVuelo = null;
+let verTodasAlertas = false;
+const ALERTAS_TTL = 5 * 60 * 1000;
+
+async function cargarAlertas(forzar) {
+  if (!forzar && alertasCache.datos && Date.now() - alertasCache.at < ALERTAS_TTL) {
+    return alertasCache.datos;
+  }
+  // Al abrir el dashboard, la campanita y el panel piden lo mismo a la vez: sin esto
+  // saldrian dos peticiones identicas cada vez.
+  if (!forzar && alertasEnVuelo) return alertasEnVuelo;
+  alertasEnVuelo = (async () => {
+    const a = await api('POST', '/alertas/preview');
+    if (a && !a.detail) alertasCache = { at: Date.now(), datos: a };
+    return a;
+  })();
+  try {
+    return await alertasEnVuelo;
+  } finally {
+    alertasEnVuelo = null;
+  }
+}
+
+/* Las mías. El filtro es del lado del cliente a propósito: la tabla de leads ya enseña
+   todos los leads a todo el mundo, así que aquí no se expone nada nuevo. El admin las ve
+   todas porque no es responsable de ninguna. */
+function misAlertas(a) {
+  const yo = usuarioActual();
+  // El admin no es responsable de ningún lead, así que las ve todas o no vería ninguna.
+  return yo === 'admin' ? a.alertas : a.alertas.filter(x => x.responsable === yo);
+}
+
+async function renderCampana(forzar) {
+  const badge = document.getElementById('bell-badge');
+  const a = await cargarAlertas(forzar);
+  if (!a || a.detail) { badge.style.display = 'none'; return; }
+  const n = misAlertas(a).length;
+  badge.style.display = n ? 'block' : 'none';
+  badge.textContent = n > 99 ? '99+' : n;
+  document.getElementById('bell').title = n
+    ? `${n} lead${n !== 1 ? 's' : ''} que necesitan algo hoy`
+    : 'Nada pendiente hoy';
+}
+
+/* La regla queda escrita en la pantalla, con los umbrales y los canales REALES que devuelve
+   el servidor, no unos valores copiados a mano aquí: si alguien cambia ALERTAS_TRIAL_DIAS o
+   se queda sin configurar el correo, lo que se lee en el dashboard cambia con ello. */
 async function loadAlertaBox() {
   const el = document.getElementById('alerta-box');
-  const a = await api('POST', '/alertas/preview');
+  const a = await cargarAlertas();
   if (!a) return;
   if (a.detail) {
     el.innerHTML = `<div class="cell-muted">No se pudieron evaluar las alertas: ${esc(a.detail)}</div>`;
     return;
   }
   const u = a.umbrales;
-  const n = a.alertas.length;
-  const canal = a.configurado
-    ? `Cada día a las <b>${String(a.hora).padStart(2, '0')}:00</b> se avisa por WhatsApp`
-    : `<b>Sin canal configurado</b> (falta <code>ALERTAS_WEBHOOK_URL</code>): las reglas se evalúan pero no se envía nada. Se avisaría`;
+  const canal = (a.canales || []).length
+    ? `Cada día a las <b>${String(a.hora).padStart(2, '0')}:00</b> se avisa por <b>${esc(a.canales.join(' y '))}</b>`
+    : `<b>Sin canal configurado:</b> las reglas se evalúan y salen en la campanita, pero <b>no se envía nada</b>. Se avisaría`;
+  const frase = n => `${n} lead${n !== 1 ? 's' : ''}`;
   const huerfanos = a.sin_dueno
-    ? ` <b>${a.sin_dueno}</b> lead${a.sin_dueno !== 1 ? 's' : ''} cumple${a.sin_dueno !== 1 ? 'n' : ''} la regla pero no tiene${a.sin_dueno !== 1 ? 'n' : ''} responsable, así que no genera${a.sin_dueno !== 1 ? 'n' : ''} alerta.`
+    ? ` ${frase(a.sin_dueno)} cumplen la regla pero no tienen responsable, así que no generan alerta.`
+    : '';
+  const sinCorreo = (a.sin_correo || []).length
+    ? ` <b style="color:var(--red)">Sin correo configurado: ${esc(a.sin_correo.map(cap).join(', '))}</b> — no reciben nada.`
     : '';
   el.innerHTML = `
     <div>${canal} de las pruebas que vencen en <b>${u.trial_dias} día${u.trial_dias !== 1 ? 's' : ''} o menos</b>
       y de los pagos que llevan <b>${u.pago_dias} día${u.pago_dias !== 1 ? 's' : ''} o más</b> sin aprobarse.
-      Cada alerta va dirigida al <b>responsable</b> del lead.${huerfanos}</div>
+      Cada persona recibe <b>solo sus leads</b>.${huerfanos}${sinCorreo}</div>
     <button class="btn-sm" style="white-space:nowrap" onclick="verAlertas()">
-      Ver alertas de hoy${n ? ` (${n})` : ''}</button>`;
+      Ver alertas de hoy${a.alertas.length ? ` (${a.alertas.length})` : ''}</button>`;
 }
 
-async function verAlertas() {
+function alertaItem(x) {
+  const detalle = x.tipo === 'trial_por_vencer'
+    ? `Prueba ${x.dias === 0 ? '<b>vence hoy</b>' : `vence en <b>${x.dias} día${x.dias !== 1 ? 's' : ''}</b>`} (${esc(fmtDia(x.fecha))})`
+    : `Pago esperando aprobación desde hace <b>${x.dias} días</b> (${esc(fmtDia(x.fecha))})`;
+  return `<div class="alerta-item" style="cursor:pointer" onclick="irAlerta('${esc(x.lead_id)}')">
+      <div><b>${esc(x.nombre)}</b>${x.empresa ? ' · ' + esc(x.empresa) : ''}
+        <code style="font-size:11.5px;color:var(--gray-500)">${esc(x.telefono)}</code></div>
+      <div class="hint">${detalle}</div>
+      ${x.siguiente_paso ? `<div class="hint">Siguiente paso: ${esc(x.siguiente_paso)}</div>` : ''}
+    </div>`;
+}
+
+function irAlerta(leadId) {
+  closeAlertas();
+  nav('detail', leadId);
+}
+
+/* forzar=true al abrir la campanita (datos frescos); false al solo cambiar el filtro, que
+   no necesita volver a preguntar por lo mismo. */
+async function verAlertas(forzar = true) {
   const body = document.getElementById('alertas-body');
   body.innerHTML = '<div class="modal-loading"><span class="spinner"></span>Evaluando…</div>';
   document.getElementById('alertas-overlay').classList.add('open');
-  const a = await api('POST', '/alertas/preview');
+  const a = await cargarAlertas(forzar);
   if (!a) return;
   if (a.detail) { body.innerHTML = `<div class="empty-box">${esc(a.detail)}</div>`; return; }
-  if (!a.alertas.length) {
-    body.innerHTML = '<div class="empty-box">🎉 Nada por avisar hoy.</div>';
+
+  const yo = usuarioActual();
+  const mias = misAlertas(a);
+  const lista = verTodasAlertas ? a.alertas : mias;
+  const otras = a.alertas.length - mias.length;
+
+  if (!lista.length) {
+    body.innerHTML = `<div class="empty-box">Nada pendiente ${verTodasAlertas ? '' : 'para ti '}hoy.</div>`
+      + (otras && !verTodasAlertas ? `<div style="text-align:center"><button class="btn-sm" onclick="alternarAlertas()">Ver las de todo el equipo (${otras})</button></div>` : '');
     return;
   }
-  const duenos = [...new Set(a.alertas.map(x => x.responsable))].sort();
-  body.innerHTML = `<div class="alerta-lista">${duenos.map(d => `
-    <h4>${esc(cap(d))} — ${a.alertas.filter(x => x.responsable === d).length} por atender</h4>
-    ${a.alertas.filter(x => x.responsable === d).map(x => `
-      <div class="alerta-item">
-        <div><b>${esc(x.nombre)}</b>${x.empresa ? ' · ' + esc(x.empresa) : ''}
-          <code style="font-size:11.5px;color:var(--gray-500)">${esc(x.telefono)}</code></div>
-        <div class="hint">${x.tipo === 'trial_por_vencer'
-          ? `Prueba ${x.dias === 0 ? 'vence hoy' : `vence en ${x.dias} día${x.dias !== 1 ? 's' : ''}`} (${esc(fmtDia(x.fecha))})`
-          : `Pago esperando aprobación desde hace ${x.dias} días (${esc(fmtDia(x.fecha))})`}</div>
-      </div>`).join('')}`).join('')}
-    <div class="hint" style="margin-top:16px">Esto es una vista previa: no se ha enviado ni registrado nada.</div>
+  const duenos = [...new Set(lista.map(x => x.responsable))].sort();
+  const porDueno = duenos.length > 1;
+  body.innerHTML = `<div class="alerta-lista">
+    ${porDueno
+      ? duenos.map(d => `<h4>${esc(cap(d))} — ${lista.filter(x => x.responsable === d).length} por atender</h4>
+          ${lista.filter(x => x.responsable === d).map(alertaItem).join('')}`).join('')
+      : `<h4>${esc(cap(duenos[0] || yo))} — ${lista.length} por atender</h4>${lista.map(alertaItem).join('')}`}
+    <div class="hint" style="margin-top:16px">
+      Haz clic en un lead para abrirlo. El contador baja cuando el lead deja de cumplir la
+      regla, no al mirarlo.
+      ${otras ? `<br><button class="btn-sm" style="margin-top:8px" onclick="alternarAlertas()">${
+        verTodasAlertas ? 'Ver solo las mías' : `Ver las de todo el equipo (${otras} más)`}</button>` : ''}
+    </div>
   </div>`;
+}
+
+function alternarAlertas() {
+  verTodasAlertas = !verTodasAlertas;
+  return verAlertas(false);   // devuelve la promesa: repintar es asincrono
 }
 
 function closeAlertas() { document.getElementById('alertas-overlay').classList.remove('open'); }
@@ -1507,13 +1606,6 @@ function notasPanel(leadId, notas) {
       <div style="display:flex;gap:10px;align-items:center;margin-top:8px">
         <button class="btn-brief" onclick="guardarNota('${id}', this)">Añadir nota</button>
         <span class="hint">Se firma sola con tu usuario y la fecha.</span>
-      </div>
-      <div class="nota-regla">
-        <p><b>Si ya existe como etiqueta, usa la etiqueta.</b> «Insistir», «Demo agendada»,
-           «Cotización», «Free trial»… no se escriben aquí: se marcan arriba.</p>
-        <p><b>Aquí no va:</b> juicios personales sobre el cliente, datos de salud, ni datos
-           económicos sensibles (deudas, ingresos personales, datos bancarios).</p>
-        <p>Las notas se eliminan junto con el lead.</p>
       </div>
     </div>
     <div class="nota-list">${items.length ? items.map(n => `
