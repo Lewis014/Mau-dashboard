@@ -315,8 +315,9 @@ ON CONFLICT (lead_id) DO UPDATE SET
     transcript           = EXCLUDED.transcript,
     is_test              = leads_dataset.is_test OR EXCLUDED.is_test,
     updated_at           = NOW()
--- NO se tocan: outcome_tags, outcome (derivado de ellas), outcome_date, outcome_source
--- ni captured_at — son el etiquetado manual del dashboard;
+-- NO se tocan: outcome_tags, outcome (derivado de ellas), outcome_date, outcome_source,
+-- siguiente_paso* ni captured_at — son el trabajo manual del dashboard;
+-- tampoco lead_notas, que es una tabla aparte y muere con el lead (ON DELETE CASCADE);
 -- ni las columnas del flujo n8n (interest, domain, score, meet_url, utm_*, job_title...).
 -- captured_at solo se fija en el INSERT (contacto que n8n nunca registro): se usa la
 -- fecha del primer mensaje real, no NOW(), para no inventar un pico de captacion hoy.

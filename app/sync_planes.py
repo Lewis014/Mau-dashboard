@@ -100,8 +100,12 @@ async def sincronizar(conn: asyncpg.Connection, dry_run: bool = False,
     if not MAUWEB_API_TOKEN:
         raise RuntimeError("Falta MAUWEB_API_TOKEN")
 
+    # plan_estado y plan_estado_desde vienen para poder detectar el CAMBIO de estado: sin
+    # saber desde cuando un pago esta en verificacion no hay forma de avisar de que lleva
+    # tres dias sin que nadie lo apruebe (ver app/alertas.py).
     leads = await conn.fetch(
-        "SELECT lead_id, email, outcome_tags FROM leads_dataset WHERE is_test = false"
+        "SELECT lead_id, email, outcome_tags, plan_estado, plan_estado_desde "
+        "FROM leads_dataset WHERE is_test = false"
         + (f" LIMIT {int(limit)}" if limit else "")
     )
 
@@ -174,18 +178,21 @@ async def sincronizar(conn: asyncpg.Connection, dry_run: bool = False,
         if dry_run:
             continue
         tags = fusionar_tags(list(r["outcome_tags"] or []), estado)
+        # La marca solo se mueve cuando el estado cambia de verdad; si no, un sync diario
+        # la reiniciaria cada mañana y ningun pago llegaria nunca a "lleva 3 dias parado".
+        desde = ahora if r["plan_estado"] != estado else (r["plan_estado_desde"] or ahora)
         await conn.execute(
             """
             UPDATE leads_dataset
                SET plan_estado=$2, plan_nombre=$3, plan_inicia=$4, plan_expira=$5,
                    plan_pagos=$6, plan_user_id=$7, plan_match=$8, plan_sync_at=$9,
-                   outcome_tags=$10, outcome=$11, updated_at=NOW()
+                   outcome_tags=$10, outcome=$11, plan_estado_desde=$12, updated_at=NOW()
              WHERE lead_id=$1
             """,
             r["lead_id"], estado, cuenta.get("plan"),
             _dia(cuenta.get("inicia")), _dia(cuenta.get("expira")),
             cuenta.get("pagos"), cuenta.get("user_id"), cuenta["match"], ahora,
-            tags, primary_outcome(tags),
+            tags, primary_outcome(tags), desde,
         )
 
     # Marca a los que no cruzaron, y limpia los datos de plan por si antes si cruzaban
@@ -197,7 +204,11 @@ async def sincronizar(conn: asyncpg.Connection, dry_run: bool = False,
             UPDATE leads_dataset
                SET plan_estado='sin_cuenta', plan_sync_at=$1, plan_nombre=NULL,
                    plan_inicia=NULL, plan_expira=NULL, plan_pagos=NULL,
-                   plan_user_id=NULL, plan_match=NULL
+                   plan_user_id=NULL, plan_match=NULL,
+                   -- El lado derecho lee el valor viejo: la marca solo se mueve si el
+                   -- lead acaba de perder su cuenta, no en cada sincronizacion.
+                   plan_estado_desde = CASE WHEN plan_estado IS DISTINCT FROM 'sin_cuenta'
+                                            THEN $1 ELSE plan_estado_desde END
              WHERE is_test = false AND NOT (lead_id = ANY($2::text[]))
             """,
             ahora, list(hallado),

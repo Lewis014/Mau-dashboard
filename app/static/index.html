@@ -31,6 +31,17 @@
     .logo b { font-size: 19px; font-weight: 800; letter-spacing: 0.01em; font-family: Georgia, 'Times New Roman', serif; }
     .logo span { font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; opacity: 0.85; }
 
+    /* ── Buscador (vive en el header para estar visible desde cualquier vista) ── */
+    .search { flex: 1; max-width: 440px; margin: 0 20px; position: relative; }
+    .search input { width: 100%; border: 1px solid rgba(255,255,255,0.3); background: rgba(255,255,255,0.13); color: white; border-radius: 8px; padding: 8px 30px 8px 34px; font-size: 13.5px; font-family: inherit; }
+    .search input::placeholder { color: rgba(255,255,255,0.72); }
+    .search input:focus { outline: none; background: white; color: var(--gray-800); border-color: white; }
+    .search input:focus::placeholder { color: var(--gray-400); }
+    .search .ico { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); font-size: 12px; pointer-events: none; }
+    .search .clr { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); border: none; background: none; color: inherit; font-size: 15px; line-height: 1; cursor: pointer; opacity: 0.7; padding: 2px 4px; display: none; }
+    .search .clr:hover { opacity: 1; }
+    @media (max-width: 720px) { .search { display: none; } }
+
     /* ── Layout ── */
     .layout { display: flex; padding-top: var(--header-h); min-height: 100vh; }
     aside { width: var(--sidebar-w); background: white; border-right: 1px solid var(--gray-200); position: fixed; top: var(--header-h); bottom: 0; left: 0; overflow-y: auto; padding: 18px 12px; }
@@ -216,6 +227,8 @@
     .bd-mod b { color: var(--brand); }
     .bd-next { background: var(--brand-light); border: 1px solid var(--brand); border-radius: 8px; padding: 12px 16px; font-size: 13.5px; }
     .bd-next a { color: var(--brand); font-weight: 600; word-break: break-all; }
+    .bd-nota { background: var(--gray-50); border: 1px solid var(--gray-200); border-left: 3px solid var(--brand); border-radius: 8px; padding: 11px 14px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
+    .bd-nota .firma { display: block; margin-top: 7px; font-size: 11.5px; color: var(--gray-500); white-space: normal; }
     .bd-foot { margin-top: 18px; padding-top: 10px; border-top: 1px solid var(--gray-200); font-size: 11px; color: var(--gray-400); }
     @media print {
       body * { visibility: hidden; }
@@ -223,6 +236,35 @@
       #brief-doc { position: absolute; left: 0; top: 0; width: 100%; padding: 24px; }
       .no-print { display: none !important; }
     }
+
+    /* ── Seguimiento (siguiente paso) y notas ── */
+    .sp-form { display: flex; flex-direction: column; gap: 8px; }
+    .sp-form .row { display: flex; gap: 8px; align-items: center; }
+    .sp-form input, .nota-form textarea { border: 1px solid var(--gray-200); border-radius: 7px; padding: 8px 10px; font-size: 13px; font-family: inherit; color: var(--gray-800); width: 100%; }
+    .sp-form input:focus, .nota-form textarea:focus { outline: 2px solid var(--brand-accent); border-color: transparent; }
+    .nota-form textarea { resize: vertical; min-height: 76px; line-height: 1.5; }
+    /* La regla de uso vive pegada al campo, no en un manual aparte: si hay que ir a
+       buscarla, no se lee, y el campo se llena de cosas que ya son etiquetas. */
+    .nota-regla { background: var(--amber-light); border: 1px solid var(--amber); border-radius: 8px; padding: 10px 12px; font-size: 11.5px; line-height: 1.6; color: var(--brown); margin-top: 10px; }
+    .nota-regla b { color: var(--brown); }
+    .nota-regla p + p { margin-top: 6px; }
+    .nota-list { margin-top: 16px; display: flex; flex-direction: column; gap: 12px; max-height: 420px; overflow-y: auto; }
+    .nota { border-left: 3px solid var(--brand-light); padding: 1px 0 1px 10px; }
+    .nota-meta { font-size: 11px; color: var(--gray-500); margin-bottom: 3px; }
+    .nota-meta b { color: var(--gray-600); font-weight: 700; }
+    .nota-texto { font-size: 13px; line-height: 1.55; white-space: pre-wrap; }
+    .hint { font-size: 12px; color: var(--gray-500); line-height: 1.5; }
+    /* Celda de seguimiento en la tabla: el max-width va en el div, como en .cell-email. */
+    .cell-sp { max-width: 180px; font-size: 12.5px; line-height: 1.4; }
+    .cell-sp .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cell-sp .f { font-size: 11px; margin-top: 3px; }
+    .alerta-box { font-size: 12.5px; line-height: 1.65; color: var(--gray-600); background: white; border: 1px solid var(--gray-200); border-radius: 10px; padding: 14px 16px; display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+    .alerta-box b { color: var(--gray-800); }
+    .alerta-lista { font-size: 13px; line-height: 1.6; }
+    .alerta-lista h4 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--brand); margin: 16px 0 6px; }
+    .alerta-lista h4:first-child { margin-top: 0; }
+    .alerta-item { border-bottom: 1px solid var(--gray-100); padding: 8px 0; }
+    .alerta-item:last-child { border-bottom: none; }
 
     /* ── Auth form ── */
     .auth-form { display: flex; flex-direction: column; gap: 14px; }
@@ -241,6 +283,13 @@
   <div class="logo">
     <b>MAU</b>
     <span>Lead Scoring · Contatech</span>
+  </div>
+  <div class="search">
+    <input type="search" id="q-inp" autocomplete="off"
+           placeholder="Buscar por nombre, empresa, correo, RUC o teléfono…"
+           oninput="onBuscar()" onsearch="onBuscar()">
+    <span class="ico">🔍</span>
+    <button class="clr" id="q-clr" onclick="limpiarBusqueda()" title="Limpiar búsqueda">✕</button>
   </div>
   <button class="btn-sm" onclick="logout()">Cerrar sesión</button>
 </header>
@@ -301,7 +350,9 @@
         <button class="btn-sm" id="sync-btn" onclick="syncPlanes()">Sincronizar planes</button>
       </div>
       <div id="plan-grid"></div>
-      <div class="section-title">Leads por etiqueta</div>
+      <div class="section-title">Alertas automáticas <small>avisan solas, sin que nadie consulte</small></div>
+      <div class="alerta-box" id="alerta-box"></div>
+      <div class="section-title" style="margin-top:28px">Leads por etiqueta</div>
       <!-- Contenedor plano: cada grupo pinta dentro su propia .outcome-grid. -->
       <div id="outcome-grid"></div>
     </section>
@@ -341,12 +392,13 @@
               <th>Calificado</th>
               <th>Plan</th>
               <th>Etiquetas</th>
+              <th>Seguimiento</th>
               <th>Fecha</th>
               <th></th>
             </tr>
           </thead>
           <tbody id="tbody">
-            <tr class="empty-row"><td colspan="11"><span class="spinner"></span>Cargando…</td></tr>
+            <tr class="empty-row"><td colspan="12"><span class="spinner"></span>Cargando…</td></tr>
           </tbody>
         </table>
       </div>
@@ -369,6 +421,17 @@
       </div>
     </section>
   </main>
+</div>
+
+<!-- Alertas modal -->
+<div class="overlay" id="alertas-overlay">
+  <div class="modal modal-brief">
+    <div class="modal-head">
+      <span class="modal-title">Alertas de hoy</span>
+      <button class="modal-close" onclick="closeAlertas()">×</button>
+    </div>
+    <div id="alertas-body"></div>
+  </div>
 </div>
 
 <!-- Brief modal -->
@@ -416,6 +479,17 @@ let tagSelected = null;     // etiquetado
 // #dashboard (donde estan los controles) y #leads (que solo lo refleja en un chip).
 let dateRange = { desde: '', hasta: '' };
 let aniosCargados = false;
+// El texto buscado vive en el DOM (#q-inp); esto solo guarda el temporizador del debounce,
+// para no lanzar una peticion por cada tecla.
+let buscarTimer = null;
+
+/* Filtros por la fecha del siguiente paso. Deben coincidir con SEGUIMIENTO_SQL de main.py. */
+const SEG_FILTROS = [
+  { v: 'vencido',     l: 'Vencido' },
+  { v: 'hoy',         l: 'Hoy' },
+  { v: 'semana',      l: 'Esta semana' },
+  { v: 'sin_definir', l: 'Sin definir' },
+];
 
 /* Etiquetas de lead: unica definicion del frontend. Filtros, badges, botones y las
    tarjetas del dashboard se generan desde aqui; debe coincidir con TAG_GROUPS de main.py.
@@ -522,11 +596,35 @@ function fmtDate(iso) {
   return new Date(iso).toLocaleDateString('es-PE', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
+/* Fechas sin hora ('YYYY-MM-DD'). fmtDate las parsearia como UTC y en Lima mostraria el
+   dia anterior; el sufijo horario las ancla a hora local. */
+function fmtDia(iso) { return iso ? fmtDate(iso + 'T00:00:00') : '—'; }
+
+function fmtFechaHora(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('es-PE', {
+    day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+}
+
+function cap(s) { return String(s ?? '').charAt(0).toUpperCase() + String(s ?? '').slice(1); }
+
+/* Dias que lleva vencido un 'YYYY-MM-DD' (0 = hoy, negativo = aun no vence). Se compara
+   por dia y no por instante: un paso para hoy no esta vencido a las 11 de la noche. */
+function diasDesde(iso) {
+  const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+  return Math.round((hoy - new Date(iso + 'T00:00:00')) / 86400000);
+}
+
 /* ══════════ Router ══════════ */
 const VIEWS = ['dashboard', 'leads', 'detail', 'etiquetado'];
 
 function nav(view, param) {
   location.hash = param ? `#${view}/${param}` : `#${view}`;
+}
+
+function vistaActual() {
+  return (location.hash.replace(/^#/, '') || 'dashboard').split('/')[0];
 }
 
 function route() {
@@ -573,7 +671,15 @@ async function loadDashboard() {
       <div class="kpi-label">P(conversión) promedio</div>
       <div class="kpi-value">${prob}</div>
       <div class="kpi-foot">${s.con_score} lead${s.con_score !== 1 ? 's' : ''} puntuados por el modelo</div>
+    </div>
+    <div class="kpi" style="cursor:pointer" onclick="goLeadsSeguimiento('vencido')"
+         title="Ver los leads con el siguiente paso vencido">
+      <div class="kpi-label">Seguimientos vencidos</div>
+      <div class="kpi-value" ${s.seguimientos_vencidos ? 'style="color:var(--red)"' : ''}>${s.seguimientos_vencidos || 0}</div>
+      <div class="kpi-foot">siguiente paso con fecha ya pasada</div>
     </div>`;
+
+  loadAlertaBox();
 
   const porPlan = s.por_plan_estado || {};
   const sincronizado = Object.values(porPlan).reduce((a, b) => a + b, 0);
@@ -612,6 +718,7 @@ function goLeadsFiltered(tag) {
     document.getElementById(`f-tag-${g.key}`).value = g.key === TAG_GROUP[tag] ? tag : '';
   }
   document.getElementById('f-plan').value = '';
+  document.getElementById('f-seg').value = '';
   page = 0;
   nav('leads');
 }
@@ -619,9 +726,75 @@ function goLeadsFiltered(tag) {
 function goLeadsPlan(estado) {
   for (const g of TAG_GROUPS) document.getElementById(`f-tag-${g.key}`).value = '';
   document.getElementById('f-plan').value = estado;
+  document.getElementById('f-seg').value = '';
   page = 0;
   nav('leads');
 }
+
+function goLeadsSeguimiento(valor) {
+  for (const g of TAG_GROUPS) document.getElementById(`f-tag-${g.key}`).value = '';
+  document.getElementById('f-plan').value = '';
+  document.getElementById('f-seg').value = valor;
+  page = 0;
+  nav('leads');
+}
+
+/* ══════════ Alertas automáticas ══════════ */
+
+/* La regla queda escrita en la pantalla, con los umbrales REALES que devuelve el servidor
+   y no unos numeros copiados a mano aqui: si alguien cambia ALERTAS_TRIAL_DIAS, lo que se
+   lee en el dashboard cambia con el. */
+async function loadAlertaBox() {
+  const el = document.getElementById('alerta-box');
+  const a = await api('POST', '/alertas/preview');
+  if (!a) return;
+  if (a.detail) {
+    el.innerHTML = `<div class="cell-muted">No se pudieron evaluar las alertas: ${esc(a.detail)}</div>`;
+    return;
+  }
+  const u = a.umbrales;
+  const n = a.alertas.length;
+  const canal = a.configurado
+    ? `Cada día a las <b>${String(a.hora).padStart(2, '0')}:00</b> se avisa por WhatsApp`
+    : `<b>Sin canal configurado</b> (falta <code>ALERTAS_WEBHOOK_URL</code>): las reglas se evalúan pero no se envía nada. Se avisaría`;
+  const huerfanos = a.sin_dueno
+    ? ` <b>${a.sin_dueno}</b> lead${a.sin_dueno !== 1 ? 's' : ''} cumple${a.sin_dueno !== 1 ? 'n' : ''} la regla pero no tiene${a.sin_dueno !== 1 ? 'n' : ''} responsable, así que no genera${a.sin_dueno !== 1 ? 'n' : ''} alerta.`
+    : '';
+  el.innerHTML = `
+    <div>${canal} de las pruebas que vencen en <b>${u.trial_dias} día${u.trial_dias !== 1 ? 's' : ''} o menos</b>
+      y de los pagos que llevan <b>${u.pago_dias} día${u.pago_dias !== 1 ? 's' : ''} o más</b> sin aprobarse.
+      Cada alerta va dirigida al <b>responsable</b> del lead.${huerfanos}</div>
+    <button class="btn-sm" style="white-space:nowrap" onclick="verAlertas()">
+      Ver alertas de hoy${n ? ` (${n})` : ''}</button>`;
+}
+
+async function verAlertas() {
+  const body = document.getElementById('alertas-body');
+  body.innerHTML = '<div class="modal-loading"><span class="spinner"></span>Evaluando…</div>';
+  document.getElementById('alertas-overlay').classList.add('open');
+  const a = await api('POST', '/alertas/preview');
+  if (!a) return;
+  if (a.detail) { body.innerHTML = `<div class="empty-box">${esc(a.detail)}</div>`; return; }
+  if (!a.alertas.length) {
+    body.innerHTML = '<div class="empty-box">🎉 Nada por avisar hoy.</div>';
+    return;
+  }
+  const duenos = [...new Set(a.alertas.map(x => x.responsable))].sort();
+  body.innerHTML = `<div class="alerta-lista">${duenos.map(d => `
+    <h4>${esc(cap(d))} — ${a.alertas.filter(x => x.responsable === d).length} por atender</h4>
+    ${a.alertas.filter(x => x.responsable === d).map(x => `
+      <div class="alerta-item">
+        <div><b>${esc(x.nombre)}</b>${x.empresa ? ' · ' + esc(x.empresa) : ''}
+          <code style="font-size:11.5px;color:var(--gray-500)">${esc(x.telefono)}</code></div>
+        <div class="hint">${x.tipo === 'trial_por_vencer'
+          ? `Prueba ${x.dias === 0 ? 'vence hoy' : `vence en ${x.dias} día${x.dias !== 1 ? 's' : ''}`} (${esc(fmtDia(x.fecha))})`
+          : `Pago esperando aprobación desde hace ${x.dias} días (${esc(fmtDia(x.fecha))})`}</div>
+      </div>`).join('')}`).join('')}
+    <div class="hint" style="margin-top:16px">Esto es una vista previa: no se ha enviado ni registrado nada.</div>
+  </div>`;
+}
+
+function closeAlertas() { document.getElementById('alertas-overlay').classList.remove('open'); }
 
 /* Trae de mau-web el estado comercial de todos los leads. Tarda unos segundos (una
    llamada HTTP mas un UPDATE por lead cruzado), asi que el boton se bloquea mientras. */
@@ -708,18 +881,48 @@ function limpiarRango() {
 
 function recargarPorRango() {
   page = 0;
-  const v = (location.hash.replace(/^#/, '') || 'dashboard').split('/')[0];
-  if (v === 'leads') loadLeads(); else loadDashboard();
+  if (vistaActual() === 'leads') loadLeads(); else loadDashboard();
+}
+
+/* ══════════ Buscador (header) ══════════ */
+
+function textoBusqueda() { return document.getElementById('q-inp').value.trim(); }
+
+/* Una peticion por tecla sobraria; 300 ms es donde ya se dejo de escribir pero todavia no
+   se percibe espera. Buscar desde cualquier vista lleva a la tabla, que es donde se ve. */
+function onBuscar() {
+  // 'block' explicito: el display por defecto de .clr es none, asi que vaciar el estilo
+  // en linea lo dejaria oculto igual.
+  document.getElementById('q-clr').style.display = textoBusqueda() ? 'block' : 'none';
+  clearTimeout(buscarTimer);
+  buscarTimer = setTimeout(() => {
+    page = 0;
+    if (vistaActual() !== 'leads') nav('leads'); else loadLeads();
+  }, 300);
+}
+
+function limpiarBusqueda() {
+  document.getElementById('q-inp').value = '';
+  onBuscar();
 }
 
 /* Chip de solo lectura en la toolbar de #leads: los controles estan en el dashboard,
    asi que sin esto la tabla apareceria filtrada sin explicacion. */
 function renderRangeChip() {
   const chip = document.getElementById('range-chip');
-  if (!dateRange.desde && !dateRange.hasta) { chip.style.display = 'none'; return; }
-  // fmtDate parsea 'YYYY-MM-DD' como UTC; el sufijo horario lo fuerza a hora local.
-  const d = dateRange.desde ? fmtDate(dateRange.desde + 'T00:00:00') : '…';
-  const h = dateRange.hasta ? fmtDate(dateRange.hasta + 'T00:00:00') : '…';
+  const hayRango = dateRange.desde || dateRange.hasta;
+  // Buscar ignora el rango a proposito (ver list_leads en main.py). Si hay un rango puesto
+  // se dice, en vez de dejar un chip azul prometiendo un filtro que no se esta aplicando.
+  if (textoBusqueda()) {
+    chip.style.display = hayRango ? '' : 'none';
+    chip.className = 'badge badge-gray range-chip';
+    chip.innerHTML = 'Filtro de fechas en pausa mientras buscas';
+    return;
+  }
+  chip.className = 'badge badge-blue range-chip';
+  if (!hayRango) { chip.style.display = 'none'; return; }
+  const d = dateRange.desde ? fmtDia(dateRange.desde) : '…';
+  const h = dateRange.hasta ? fmtDia(dateRange.hasta) : '…';
   chip.style.display = '';
   chip.innerHTML = `${esc(d)} – ${esc(h)}<button onclick="limpiarRango()" title="Quitar filtro de fechas">✕</button>`;
 }
@@ -751,6 +954,11 @@ function renderTagFiltros() {
     <select id="f-plan" onchange="resetAndLoad()">
       <option value="">Todos</option>
       ${PLAN_ESTADOS.map(p => `<option value="${p.v}">${esc(p.l)}</option>`).join('')}
+    </select>
+    <label>Seguimiento:</label>
+    <select id="f-seg" onchange="resetAndLoad()">
+      <option value="">Todos</option>
+      ${SEG_FILTROS.map(s => `<option value="${s.v}">${esc(s.l)}</option>`).join('')}
     </select>`;
 }
 
@@ -764,11 +972,17 @@ async function loadLeads() {
   const sort     = document.getElementById('f-sort').value;
   const params   = new URLSearchParams({ limit: PAGE, offset: page * PAGE });
   const plan = document.getElementById('f-plan').value;
+  const seg  = document.getElementById('f-seg').value;
+  const q    = textoBusqueda();
   if (tags.length) params.set('tags', tags.join(','));
   if (plan)    params.set('plan_estado', plan);
   if (qual)    params.set('qualified', qual);
   if (sort)    params.set('sort', sort);
-  aplicarRango(params);
+  if (seg)     params.set('seguimiento', seg);
+  if (q)       params.set('q', q);
+  // Mientras se busca no se manda el rango: el backend tampoco lo aplicaria (buscar un
+  // telefono tiene que encontrarlo sea de la fecha que sea).
+  if (!q) aplicarRango(params);
 
   renderRangeChip();
   const data = await api('GET', '/leads?' + params);
@@ -793,10 +1007,27 @@ function probCell(l) {
   return `<span class="cell-muted" title="Sin conversación suficiente para puntuar">—</span>`;
 }
 
+/* Celda de seguimiento: la accion y cuanto le queda. El color es el que hace que un
+   vencido salte a la vista sin tener que leer la fecha. */
+function segCell(l) {
+  if (!l.siguiente_paso) return '<span class="cell-muted">—</span>';
+  const d = l.siguiente_paso_fecha != null ? diasDesde(l.siguiente_paso_fecha) : null;
+  let cls = 'badge-gray', txt = 'sin fecha';
+  if (d != null) {
+    if (d > 0)       { cls = 'badge-red';   txt = `venció hace ${d} día${d !== 1 ? 's' : ''}`; }
+    else if (d === 0) { cls = 'badge-amber'; txt = 'vence hoy'; }
+    else              { cls = 'badge-gray';  txt = fmtDia(l.siguiente_paso_fecha); }
+  }
+  return `<div class="cell-sp">
+      <div class="t" title="${esc(l.siguiente_paso)}">${esc(l.siguiente_paso)}</div>
+      <div class="f"><span class="badge ${cls}">${esc(txt)}</span></div>
+    </div>`;
+}
+
 function renderRows(leads) {
   const tb = document.getElementById('tbody');
   if (!leads.length) {
-    tb.innerHTML = '<tr class="empty-row"><td colspan="11">Sin leads para mostrar</td></tr>';
+    tb.innerHTML = '<tr class="empty-row"><td colspan="12">Sin leads para mostrar</td></tr>';
     return;
   }
   tb.innerHTML = leads.map(l => {
@@ -816,6 +1047,7 @@ function renderRows(leads) {
           <button class="btn-tag-add" title="Editar etiquetas" onclick="toggleTagPop('${id}', this)">+</button>
         </div>
       </td>
+      <td>${segCell(l)}</td>
       <td class="cell-muted">${fmtDate(l.captured_at)}</td>
       <td><button class="btn-brief" onclick="event.stopPropagation();showBrief('${id}')">Brief</button></td>
     </tr>`;
@@ -1009,7 +1241,10 @@ async function loadDetail(leadId) {
   currentLeadId = leadId;
   const el = document.getElementById('detail-content');
   el.innerHTML = '<div class="empty-box"><span class="spinner"></span>Cargando…</div>';
-  const l = await api('GET', `/leads/${leadId}`);
+  const [l, notas] = await Promise.all([
+    api('GET', `/leads/${leadId}`),
+    api('GET', `/leads/${leadId}/notas`),
+  ]);
   if (!l) return;
   if (l.detail) { el.innerHTML = `<div class="empty-box">${esc(l.detail)}</div>`; return; }
 
@@ -1048,6 +1283,14 @@ async function loadDetail(leadId) {
           ${tagPicker(l.lead_id, tagsOf(l), 'detail')}
         </div>
         <div class="panel">
+          <div class="panel-title">Siguiente paso</div>
+          ${siguientePasoForm(l)}
+        </div>
+        <div class="panel">
+          <div class="panel-title">Notas</div>
+          ${notasPanel(l.lead_id, notas)}
+        </div>
+        <div class="panel">
           <div class="panel-title">Datos del lead</div>
           ${fields || '<span class="cell-muted">Sin datos extraídos.</span>'}
           <div class="field"><b>Módulos de interés</b><span>${modulos}</span></div>
@@ -1062,6 +1305,97 @@ async function loadDetail(leadId) {
         ${renderTranscript(l.transcript)}
       </div>
     </div>`;
+}
+
+/* ══════════ Siguiente paso ══════════ */
+/* Campo corto y aparte de las notas a proposito: la nota explica POR QUE el lead esta donde
+   esta, y esto es QUE toca hacer y CUANDO. Solo el segundo puede vencer, y por eso es el
+   unico que ataca el seguimiento que se cae. */
+function siguientePasoForm(l) {
+  const d = l.siguiente_paso_fecha != null ? diasDesde(l.siguiente_paso_fecha) : null;
+  let estado = '';
+  if (l.siguiente_paso && d != null) {
+    estado = d > 0
+      ? `<span class="badge badge-red">Vencido hace ${d} día${d !== 1 ? 's' : ''}</span>`
+      : d === 0
+        ? '<span class="badge badge-amber">Vence hoy</span>'
+        : `<span class="badge badge-gray">Faltan ${-d} día${d !== -1 ? 's' : ''}</span>`;
+  }
+  const firma = l.siguiente_paso_autor
+    ? `<div class="hint">Definido por <b>${esc(cap(l.siguiente_paso_autor))}</b> el ${esc(fmtFechaHora(l.siguiente_paso_at))}</div>`
+    : '';
+  const id = esc(l.lead_id);
+  return `<div class="sp-form">
+      <input type="text" id="sp-texto" maxlength="140" value="${esc(l.siguiente_paso || '')}"
+             placeholder="Ej.: llamar para cerrar la cotización">
+      <div class="row">
+        <input type="date" id="sp-fecha" value="${esc(l.siguiente_paso_fecha || '')}">
+        <button class="btn-brief" onclick="guardarSiguientePaso('${id}', this)">Guardar</button>
+        ${l.siguiente_paso ? `<button class="btn-sm" onclick="limpiarSiguientePaso('${id}', this)">Quitar</button>` : ''}
+      </div>
+      ${estado}${firma}
+      <div class="hint">Una acción concreta con fecha, no un resumen. El porqué va en las notas.</div>
+    </div>`;
+}
+
+async function guardarSiguientePaso(leadId, btn) {
+  const texto = document.getElementById('sp-texto').value.trim();
+  const fecha = document.getElementById('sp-fecha').value;
+  if (texto && !fecha) {
+    alert('Ponle fecha: sin fecha el siguiente paso no puede vencer, y no aparecerá en la vista de vencidos.');
+    document.getElementById('sp-fecha').focus();
+    return;
+  }
+  btn.disabled = true; btn.textContent = 'Guardando…';
+  const r = await api('PATCH', `/leads/${leadId}/siguiente-paso`, { texto, fecha: fecha || null });
+  if (r && r.ok) { loadDetail(leadId); return; }
+  btn.disabled = false; btn.textContent = 'Guardar';
+  if (r && r.detail) alert(r.detail);
+}
+
+async function limpiarSiguientePaso(leadId, btn) {
+  btn.disabled = true; btn.textContent = 'Quitando…';
+  const r = await api('PATCH', `/leads/${leadId}/siguiente-paso`, { texto: '', fecha: null });
+  if (r && r.ok) { loadDetail(leadId); return; }
+  btn.disabled = false; btn.textContent = 'Quitar';
+  if (r && r.detail) alert(r.detail);
+}
+
+/* ══════════ Notas ══════════ */
+function notasPanel(leadId, notas) {
+  const items = (notas && notas.items) || [];
+  const id = esc(leadId);
+  return `<div class="nota-form">
+      <textarea id="nota-texto" maxlength="2000"
+        placeholder="Por qué está donde está: qué pasó en la última conversación, qué dijo, qué lo frena."></textarea>
+      <div style="display:flex;gap:10px;align-items:center;margin-top:8px">
+        <button class="btn-brief" onclick="guardarNota('${id}', this)">Añadir nota</button>
+        <span class="hint">Se firma sola con tu usuario y la fecha.</span>
+      </div>
+      <div class="nota-regla">
+        <p><b>Si ya existe como etiqueta, usa la etiqueta.</b> «Insistir», «Demo agendada»,
+           «Cotización», «Free trial»… no se escriben aquí: se marcan arriba.</p>
+        <p><b>Aquí no va:</b> juicios personales sobre el cliente, datos de salud, ni datos
+           económicos sensibles (deudas, ingresos personales, datos bancarios).</p>
+        <p>Las notas se eliminan junto con el lead.</p>
+      </div>
+    </div>
+    <div class="nota-list">${items.length ? items.map(n => `
+      <div class="nota">
+        <div class="nota-meta"><b>${esc(cap(n.autor))}</b> · ${esc(fmtFechaHora(n.creado_at))}</div>
+        <div class="nota-texto">${esc(n.texto)}</div>
+      </div>`).join('') : '<span class="hint">Todavía no hay notas en este lead.</span>'}</div>`;
+}
+
+async function guardarNota(leadId, btn) {
+  const ta = document.getElementById('nota-texto');
+  const texto = ta.value.trim();
+  if (!texto) { ta.focus(); return; }
+  btn.disabled = true; btn.textContent = 'Guardando…';
+  const r = await api('POST', `/leads/${leadId}/notas`, { texto });
+  if (r && r.id) { loadDetail(leadId); return; }   // se repinta con la nota ya firmada
+  btn.disabled = false; btn.textContent = 'Añadir nota';
+  if (r && r.detail) alert(r.detail);
 }
 
 /* Ficha del plan en el detalle. Es solo lectura: lo escribe el sync, no el vendedor. */
@@ -1172,7 +1506,19 @@ function renderBriefDoc(b) {
     ${b.modulos.length ? `<div class="bd-section"><h4>Módulos recomendados</h4>${
       b.modulos.map(m => `<div class="bd-mod"><b>${esc(m.nombre)}</b> — ${esc(m.desc)}</div>`).join('')
     }</div>` : ''}
-    <div class="bd-section"><h4>Siguiente paso</h4>
+    ${b.seguimiento ? `<div class="bd-section"><h4>Siguiente paso</h4>
+      <div class="bd-next">${esc(b.seguimiento.texto)}<br>
+        <span style="font-size:12.5px;color:var(--gray-600)">
+          Para el ${esc(fmtDia(b.seguimiento.fecha))}
+          ${b.seguimiento.vencido ? ' · <b style="color:var(--red)">VENCIDO</b>' : ''}
+          ${b.seguimiento.autor ? ' · definido por ' + esc(cap(b.seguimiento.autor)) : ''}
+        </span>
+      </div>
+    </div>` : ''}
+    ${b.ultima_nota ? `<div class="bd-section"><h4>Última nota</h4>
+      <div class="bd-nota">${esc(b.ultima_nota.texto)}<span class="firma">— ${esc(cap(b.ultima_nota.autor))}, ${esc(fmtFechaHora(b.ultima_nota.fecha))}</span></div>
+    </div>` : ''}
+    <div class="bd-section"><h4>Acción sugerida</h4>
       <div class="bd-next">${esc(b.siguiente_paso.accion)}<br><a href="${esc(b.siguiente_paso.link)}" target="_blank">${esc(b.siguiente_paso.link)}</a></div>
     </div>
     <div class="bd-foot">Generado automáticamente por MAU Lead Scoring — uso interno del equipo comercial.</div>
@@ -1195,6 +1541,7 @@ async function showBrief(leadId) {
 
 function closeBrief() { document.getElementById('brief-overlay').classList.remove('open'); }
 document.getElementById('brief-overlay').addEventListener('click', e => { if (e.target === e.currentTarget) closeBrief(); });
+document.getElementById('alertas-overlay').addEventListener('click', e => { if (e.target === e.currentTarget) closeAlertas(); });
 
 // Init
 renderTagFiltros();   // antes de cualquier route(): loadLeads() lee esos desplegables

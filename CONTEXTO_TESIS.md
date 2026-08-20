@@ -111,9 +111,38 @@ CREATE TABLE IF NOT EXISTS leads_dataset (
   plan_nombre TEXT, plan_inicia TIMESTAMPTZ, plan_expira TIMESTAMPTZ,
   plan_pagos INTEGER,   -- nº de pagos aprobados; 0 = probo y nunca compro
   plan_user_id INTEGER, plan_match TEXT, plan_sync_at TIMESTAMPTZ,
+  plan_estado_desde TIMESTAMPTZ,  -- desde cuando esta en ese plan_estado; sin esto no se
+                                  -- puede saber cuanto lleva un pago sin aprobarse
+  -- Seguimiento: QUE toca hacer y CUANDO. Uno por lead (se reemplaza, no se acumula), por
+  -- eso vive aqui y no en una tabla: asi se filtra y se ordena sin join.
+  siguiente_paso TEXT,            -- max 140 caracteres; si necesita mas, es una nota
+  siguiente_paso_fecha DATE,      -- obligatoria si hay texto: lo que no puede vencer no se ve
+  siguiente_paso_autor TEXT, siguiente_paso_at TIMESTAMPTZ,
   captured_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now(),
   is_test BOOLEAN DEFAULT false
+);
+
+-- Notas por lead: varias, en orden cronologico. El autor NO lo manda el cliente, sale del
+-- token de sesion (un usuario por vendedor, DASHBOARD_USERS). El CASCADE es lo que
+-- garantiza que las notas se borran con el lead a nivel de base de datos.
+CREATE TABLE lead_notas (
+  id        BIGSERIAL PRIMARY KEY,
+  lead_id   VARCHAR(255) NOT NULL REFERENCES leads_dataset(lead_id) ON DELETE CASCADE,
+  texto     TEXT NOT NULL,
+  autor     TEXT NOT NULL,
+  creado_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Alertas ya enviadas (app/alertas.py). La PK es el antiduplicado: `clave` identifica el
+-- HECHO del que se avisa (fecha de vencimiento del trial, o dia en que el pago entro en
+-- verificacion), no el dia del aviso, para no repetir el mismo mensaje cada mañana.
+CREATE TABLE lead_alertas (
+  lead_id    VARCHAR(255) NOT NULL REFERENCES leads_dataset(lead_id) ON DELETE CASCADE,
+  tipo       TEXT NOT NULL,     -- trial_por_vencer | pago_estancado
+  clave      TEXT NOT NULL,
+  enviada_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (lead_id, tipo, clave)
 );
 ```
 

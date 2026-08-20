@@ -3,4 +3,6 @@ __pycache__/
 .env
 .venv/
 *.md
+# Los documentos de decisiones si se versionan; los borradores sueltos de la tesis no.
+!docs/*.md
 /ml
