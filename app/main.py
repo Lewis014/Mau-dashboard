@@ -107,6 +107,14 @@ SYNC_PLANES_HORA = int(os.getenv("SYNC_PLANES_HORA", "7"))
 NOTA_MAX = 2000
 SIGUIENTE_PASO_MAX = 140
 
+# Contrasenas. El maximo existe para que nadie pueda cargar el servidor mandando a derivar
+# un texto enorme: scrypt es caro a proposito.
+CLAVE_MIN = 8
+CLAVE_MAX = 200
+# Parametros de scrypt: ~16 MB de memoria por derivacion. Van DENTRO del hash guardado para
+# poder subirlos mas adelante sin invalidar las claves que ya existan.
+SCRYPT_N, SCRYPT_R, SCRYPT_P = 2 ** 14, 8, 1
+
 
 def _tz_local():
     """Zona horaria del negocio, con respaldo si la imagen no trae la base de zonas.
@@ -194,6 +202,55 @@ def normalize_tags(tags: list[str]) -> list[str]:
         raise HTTPException(status_code=400, detail=f"Etiquetas inválidas: {', '.join(invalidas)}")
     elegidas = set(tags)
     return [t for grupo in TAG_GROUPS.values() for t in grupo if t in elegidas]
+
+
+def hash_clave(clave: str) -> str:
+    """Deriva una contrasena con scrypt. Formato: scrypt$n$r$p$sal$hash.
+
+    Los parametros van DENTRO del resultado para poder subirlos mas adelante sin invalidar
+    las contrasenas ya guardadas: al verificar se usan los del propio hash, no los de ahora.
+
+    scrypt es de la biblioteca estandar; este repo evita dependencias nuevas a proposito.
+    """
+    sal = os.urandom(16)
+    h = hashlib.scrypt(clave.encode(), salt=sal, n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P, dklen=32)
+    return f"scrypt${SCRYPT_N}${SCRYPT_R}${SCRYPT_P}${sal.hex()}${h.hex()}"
+
+
+def verificar_clave(clave: str, guardado: str) -> bool:
+    """Comprueba una contrasena contra su hash. Un hash corrupto es un 'no', no un 500."""
+    try:
+        algo, n, r, p, sal, h = guardado.split("$")
+        if algo != "scrypt":
+            return False
+        calc = hashlib.scrypt(clave.encode(), salt=bytes.fromhex(sal),
+                              n=int(n), r=int(r), p=int(p), dklen=len(h) // 2)
+        return hmac.compare_digest(calc.hex(), h)
+    except Exception:  # noqa: BLE001 — hash ilegible = no autorizado
+        return False
+
+
+async def _clave_valida(usuario: str, clave: str) -> bool:
+    """¿Es esa la contrasena del usuario?
+
+    Manda la base de datos: si la persona ya cambio la suya, la de DASHBOARD_USERS deja de
+    servir. Esa variable es la credencial INICIAL que reparte el administrador.
+
+    Pero DASHBOARD_USERS si manda sobre QUIEN puede entrar, incluso si tiene fila propia:
+    asi dar de baja a alguien es un solo sitio, y no dos de los que siempre se olvida el
+    segundo. Para devolverle la contrasena inicial basta con borrar su fila.
+    """
+    if not ((usuario == ADMIN_USER and ADMIN_PASS) or usuario in DASHBOARD_USERS):
+        return False
+    fila = await db.get_pool().fetchrow(
+        "SELECT clave_hash FROM dashboard_usuarios WHERE usuario = $1", usuario
+    )
+    if fila:
+        # scrypt bloquea (esa es la gracia): va a un hilo para no congelar el event loop,
+        # igual que score_text y que el consultar() del sync.
+        return await asyncio.to_thread(verificar_clave, clave, fila["clave_hash"])
+    esperada = ADMIN_PASS if usuario == ADMIN_USER else DASHBOARD_USERS.get(usuario, "")
+    return bool(esperada) and hmac.compare_digest(clave, esperada)
 
 
 def _sign(payload: str) -> str:
@@ -284,6 +341,19 @@ async def lifespan(app: FastAPI):
     await pool.execute(
         "CREATE INDEX IF NOT EXISTS idx_leads_sig_paso ON leads_dataset (siguiente_paso_fecha) "
         "WHERE siguiente_paso_fecha IS NOT NULL"
+    )
+
+    # Contrasenas cambiadas por cada persona. Solo guarda el hash, y solo de quien la haya
+    # cambiado: quien no aparezca aqui sigue entrando con la de DASHBOARD_USERS. Borrar una
+    # fila es, justamente, devolverle a esa persona su contrasena inicial.
+    await pool.execute(
+        """
+        CREATE TABLE IF NOT EXISTS dashboard_usuarios (
+          usuario        text PRIMARY KEY,
+          clave_hash     text NOT NULL,
+          actualizado_at timestamptz NOT NULL DEFAULT now()
+        )
+        """
     )
 
     # Notas por lead: varias, en orden cronologico, con autor y fecha automaticos.
@@ -385,6 +455,12 @@ class LoginBody(BaseModel):
     password: str
 
 
+class ClaveBody(BaseModel):
+    # No lleva 'usuario': quien cambia la contrasena sale del token de sesion.
+    actual: str
+    nueva: str
+
+
 @app.post("/api/login")
 async def login(body: LoginBody):
     """Admite la cuenta de administracion y una por vendedor (DASHBOARD_USERS)."""
@@ -392,13 +468,43 @@ async def login(body: LoginBody):
         raise HTTPException(status_code=503,
                             detail="Login no configurado (falta ADMIN_PASS o DASHBOARD_USERS)")
     usuario = body.username.strip().lower()
-    esperada = ADMIN_PASS if (usuario == ADMIN_USER and ADMIN_PASS) else DASHBOARD_USERS.get(usuario, "")
-    # La comparacion se hace siempre, exista o no el usuario, para no delatar por el tiempo
-    # de respuesta cuales son validos. El centinela no puede colarse: se exige `esperada`.
-    ok = hmac.compare_digest(body.password, esperada or "\x00")
-    if not (esperada and ok):
+    if not await _clave_valida(usuario, body.password):
         raise HTTPException(status_code=401, detail="Credenciales inválidas")
-    return {"token": make_session_token(usuario), "expires_in": SESSION_TTL_SECONDS}
+    return {"token": make_session_token(usuario), "usuario": usuario,
+            "expires_in": SESSION_TTL_SECONDS}
+
+
+@app.post("/api/password")
+async def cambiar_clave(body: ClaveBody, usuario: str = Depends(check_auth)):
+    """Cambia la contrasena de quien la pide.
+
+    El usuario sale de la SESION, nunca del cuerpo: nadie puede cambiar la de otro. Es el
+    mismo principio que el autor de las notas — lo que se firma no lo elige el cliente.
+    """
+    if usuario == "api":
+        raise HTTPException(status_code=403,
+                            detail="El token de scripts no tiene contraseña que cambiar.")
+    if not await _clave_valida(usuario, body.actual):
+        raise HTTPException(status_code=401, detail="La contraseña actual no es correcta")
+    nueva = body.nueva
+    if len(nueva) < CLAVE_MIN:
+        raise HTTPException(status_code=400,
+                            detail=f"La nueva contraseña debe tener al menos {CLAVE_MIN} caracteres")
+    # El maximo no es capricho: sin el, cualquiera con sesion puede poner al servidor a
+    # derivar un texto enorme, y scrypt es caro a proposito.
+    if len(nueva) > CLAVE_MAX:
+        raise HTTPException(status_code=400,
+                            detail=f"La nueva contraseña no puede pasar de {CLAVE_MAX} caracteres")
+    if nueva == body.actual:
+        raise HTTPException(status_code=400, detail="La nueva contraseña es igual a la actual")
+
+    await db.get_pool().execute(
+        "INSERT INTO dashboard_usuarios (usuario, clave_hash) VALUES ($1, $2) "
+        "ON CONFLICT (usuario) DO UPDATE "
+        "SET clave_hash = EXCLUDED.clave_hash, actualizado_at = NOW()",
+        usuario, await asyncio.to_thread(hash_clave, nueva),
+    )
+    return {"ok": True, "usuario": usuario}
 
 
 @app.get("/health")

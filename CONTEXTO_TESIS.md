@@ -123,6 +123,16 @@ CREATE TABLE IF NOT EXISTS leads_dataset (
   is_test BOOLEAN DEFAULT false
 );
 
+-- Contrasenas que cada persona se cambio a si misma, derivadas con scrypt (nunca en claro).
+-- Solo aparece quien la haya cambiado; el resto entra con la de DASHBOARD_USERS, que es la
+-- credencial INICIAL. Esa variable sigue mandando sobre QUIEN puede entrar; esta tabla solo
+-- sobre cual es su clave. Borrar una fila = devolverle su contrasena inicial.
+CREATE TABLE dashboard_usuarios (
+  usuario        TEXT PRIMARY KEY,
+  clave_hash     TEXT NOT NULL,     -- scrypt$n$r$p$sal$hash (parametros dentro del propio hash)
+  actualizado_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Notas por lead: varias, en orden cronologico. El autor NO lo manda el cliente, sale del
 -- token de sesion (un usuario por vendedor, DASHBOARD_USERS). El CASCADE es lo que
 -- garantiza que las notas se borran con el lead a nivel de base de datos.

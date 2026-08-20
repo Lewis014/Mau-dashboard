@@ -275,6 +275,15 @@
     .btn-primary { background: var(--brand); color: white; border: none; border-radius: 7px; padding: 10px 20px; font-size: 14px; font-weight: 600; cursor: pointer; width: 100%; }
     .btn-primary:hover { background: var(--brand-dark); }
     .auth-error { font-size: 13px; color: var(--red); display: none; }
+
+    /* ── Ver contraseña ── */
+    .pw-wrap { position: relative; }
+    /* Va despues de `.auth-form input` a proposito: misma especificidad, gana el ultimo.
+       Sin el hueco, el texto de la contraseña pasa por debajo del icono. */
+    .pw-wrap input { padding-right: 40px; }
+    .pw-ojo { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); border: none; background: none; cursor: pointer; font-size: 15px; line-height: 1; padding: 5px; opacity: 0.5; }
+    .pw-ojo:hover { opacity: 1; }
+    .pw-ojo:focus-visible { outline: 2px solid var(--brand-accent); border-radius: 5px; opacity: 1; }
   </style>
 </head>
 <body>
@@ -291,7 +300,13 @@
     <span class="ico">🔍</span>
     <button class="clr" id="q-clr" onclick="limpiarBusqueda()" title="Limpiar búsqueda">✕</button>
   </div>
-  <button class="btn-sm" onclick="logout()">Cerrar sesión</button>
+  <!-- Quien esta dentro va a la vista: las notas se firman solas, y sin esto nadie se da
+       cuenta de que quedo abierta la sesion de otro hasta despues de escribirlas. -->
+  <div id="header-user" style="display:none;align-items:center;gap:12px">
+    <span id="user-chip" style="font-size:13px;opacity:0.9;white-space:nowrap"></span>
+    <button class="btn-sm" onclick="openClave()">Cambiar contraseña</button>
+    <button class="btn-sm" onclick="logout()">Cerrar sesión</button>
+  </div>
 </header>
 
 <div class="layout">
@@ -448,6 +463,35 @@
   </div>
 </div>
 
+<!-- Cambio de contraseña -->
+<div class="overlay" id="clave-overlay">
+  <div class="modal modal-auth">
+    <div class="modal-head">
+      <span class="modal-title">Cambiar contraseña</span>
+      <button class="modal-close" onclick="closeClave()">×</button>
+    </div>
+    <form class="auth-form" onsubmit="doCambiarClave(event)">
+      <p>Cambias la contraseña de <b id="clave-quien"></b>.</p>
+      <div>
+        <label for="clave-actual">Contraseña actual</label>
+        <input type="password" id="clave-actual" autocomplete="current-password" required>
+      </div>
+      <div>
+        <label for="clave-nueva">Nueva contraseña</label>
+        <input type="password" id="clave-nueva" autocomplete="new-password" minlength="8" required>
+      </div>
+      <div>
+        <label for="clave-rep">Repite la nueva</label>
+        <input type="password" id="clave-rep" autocomplete="new-password" minlength="8" required>
+      </div>
+      <span class="auth-error" id="clave-err"></span>
+      <span class="hint">Mínimo 8 caracteres. Las sesiones que ya tengas abiertas en otros
+        navegadores <b>seguirán activas</b> hasta que caduquen.</span>
+      <button type="submit" class="btn-primary" id="clave-btn">Guardar</button>
+    </form>
+  </div>
+</div>
+
 <!-- Auth modal -->
 <div class="overlay open" id="auth-overlay">
   <div class="modal modal-auth">
@@ -545,6 +589,94 @@ function esc(s) {
 function token() { return localStorage.getItem('mau_tk') || ''; }
 function logout() { localStorage.removeItem('mau_tk'); location.reload(); }
 
+/* El usuario va dentro del token ('usuario:caducidad:firma', ver session_user en main.py).
+   Se lee SOLO para mostrarlo: quien manda sigue siendo la firma que valida el servidor, asi
+   que manipularlo aqui no da acceso a nada, solo cambia lo que uno mismo ve. */
+function usuarioActual() {
+  try {
+    return atob(token().replace(/-/g, '+').replace(/_/g, '/')).split(':')[0] || '';
+  } catch { return ''; }
+}
+
+function renderUsuario() {
+  const u = usuarioActual();
+  document.getElementById('header-user').style.display = u ? 'flex' : 'none';
+  document.getElementById('user-chip').textContent = u ? cap(u) : '';
+  // Sin sesion no se ensena un buscador que no puede buscar nada.
+  document.querySelector('.search').style.display = u ? '' : 'none';
+}
+
+/* Ojo para ver lo que se escribe en los campos de contraseña. Se aplica de una vez a todos
+   (el del login y los tres del cambio) en lugar de repetir el mismo marcado cuatro veces.
+   Importa cuando la contraseña la escribe otra persona al dictado, que es justo el caso de
+   la credencial inicial que reparte el administrador. */
+function montarOjosClave() {
+  document.querySelectorAll('input[type="password"]').forEach(inp => {
+    const wrap = document.createElement('div');
+    wrap.className = 'pw-wrap';
+    inp.parentNode.insertBefore(wrap, inp);
+    wrap.appendChild(inp);
+
+    const btn = document.createElement('button');
+    // type=button es obligatorio: dentro de un <form>, un <button> sin tipo envia el
+    // formulario, asi que pulsar el ojo intentaria iniciar sesion.
+    btn.type = 'button';
+    btn.className = 'pw-ojo';
+    btn.tabIndex = -1;   // fuera del recorrido con Tab: estorba entre usuario y contraseña
+    const pintar = () => {
+      const oculta = inp.type === 'password';
+      btn.textContent = oculta ? '👁' : '🙈';
+      btn.title = btn.ariaLabel = oculta ? 'Mostrar contraseña' : 'Ocultar contraseña';
+    };
+    btn.onclick = () => {
+      inp.type = inp.type === 'password' ? 'text' : 'password';
+      pintar();
+      inp.focus();
+    };
+    pintar();
+    wrap.appendChild(btn);
+  });
+}
+
+/* ══════════ Cambio de contraseña ══════════ */
+function openClave() {
+  document.getElementById('clave-quien').textContent = cap(usuarioActual()) || 'tu usuario';
+  ['clave-actual', 'clave-nueva', 'clave-rep'].forEach(id => {
+    const inp = document.getElementById(id);
+    inp.value = '';
+    // Si quedaron a la vista la vez anterior, se vuelven a ocultar.
+    if (inp.type === 'text') inp.parentNode.querySelector('.pw-ojo').click();
+  });
+  document.getElementById('clave-err').style.display = 'none';
+  document.getElementById('clave-overlay').classList.add('open');
+  document.getElementById('clave-actual').focus();
+}
+
+function closeClave() { document.getElementById('clave-overlay').classList.remove('open'); }
+
+async function doCambiarClave(e) {
+  e.preventDefault();
+  const val = id => document.getElementById(id).value;
+  const err = document.getElementById('clave-err');
+  const fallo = m => { err.textContent = m; err.style.display = 'block'; };
+  const [actual, nueva, rep] = ['clave-actual', 'clave-nueva', 'clave-rep'].map(val);
+
+  // Lo que se puede comprobar sin servidor, se comprueba aqui: repetirla mal es el error
+  // mas frecuente y no merece un viaje de ida y vuelta.
+  if (nueva !== rep) return fallo('La nueva contraseña y su repetición no coinciden.');
+  if (nueva.length < 8) return fallo('La nueva contraseña debe tener al menos 8 caracteres.');
+  if (nueva === actual) return fallo('La nueva contraseña es igual a la actual.');
+
+  const btn = document.getElementById('clave-btn');
+  btn.disabled = true; btn.textContent = 'Guardando…';
+  const r = await api('POST', '/password', { actual, nueva });
+  btn.disabled = false; btn.textContent = 'Guardar';
+  if (!r) return;                        // sesion caducada: api() ya mostro el login
+  if (!r.ok) return fallo(r.detail || 'No se pudo cambiar la contraseña.');
+  closeClave();
+  alert('Contraseña cambiada. La próxima vez que entres, usa la nueva.');
+}
+
 async function doLogin(e) {
   e.preventDefault();
   const username = document.getElementById('user-inp').value.trim();
@@ -568,6 +700,7 @@ async function doLogin(e) {
     localStorage.setItem('mau_tk', data.token);
     document.getElementById('auth-err').style.display = 'none';
     document.getElementById('auth-overlay').classList.remove('open');
+    renderUsuario();
     route();
   } finally {
     btn.disabled = false; btn.textContent = 'Ingresar';
@@ -580,12 +713,15 @@ async function api(method, path, body) {
     headers: { 'Authorization': 'Bearer ' + token(), 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
   });
-  if (res.status === 401) {
+  if (res.status === 401 && path !== '/password') {
+    // /password se excluye: ahi un 401 significa «la contraseña actual no es correcta»,
+    // no que la sesion caducara. Cerrarla seria expulsar a alguien por una errata.
     localStorage.removeItem('mau_tk');
     const err = document.getElementById('auth-err');
     err.textContent = 'Tu sesión expiró. Vuelve a iniciar sesión.';
     err.style.display = 'block';
     document.getElementById('auth-overlay').classList.add('open');
+    renderUsuario();
     return null;
   }
   return res.json();
@@ -1543,8 +1679,12 @@ function closeBrief() { document.getElementById('brief-overlay').classList.remov
 document.getElementById('brief-overlay').addEventListener('click', e => { if (e.target === e.currentTarget) closeBrief(); });
 document.getElementById('alertas-overlay').addEventListener('click', e => { if (e.target === e.currentTarget) closeAlertas(); });
 
+document.getElementById('clave-overlay').addEventListener('click', e => { if (e.target === e.currentTarget) closeClave(); });
+
 // Init
 renderTagFiltros();   // antes de cualquier route(): loadLeads() lee esos desplegables
+montarOjosClave();
+renderUsuario();
 if (token()) {
   document.getElementById('auth-overlay').classList.remove('open');
   route();

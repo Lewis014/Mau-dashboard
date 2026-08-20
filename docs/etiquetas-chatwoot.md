@@ -1,10 +1,14 @@
 # ¿Se pueden extraer las etiquetas del chatbot vía API?
 
-**Sí se puede.** Y con un margen amplio: el dashboard ya está llamando al endpoint que las
-devuelve, y las está descartando sin mirarlas.
+**Sí se puede, y el dato sirve.** Por un margen amplio: el dashboard ya está llamando al
+endpoint que las devuelve, y las está descartando sin mirarlas.
 
-Este documento cierra el item. No hace falta implementar nada para cerrarlo; lo que queda
-pendiente es una sola comprobación contra la instancia real, descrita al final.
+Inventariado contra la instancia real el 20 de agosto de 2026: 12 etiquetas, 86 aplicaciones,
+de las que **70 son importables**. Las 16 restantes se quedan fuera a propósito porque mau-web
+ya sabe eso mejor (§5).
+
+Con esto el item queda **cerrado**. Lo que sigue es un item nuevo de implementación, con dos
+preguntas que hay que responder antes de empezar (§6).
 
 ---
 
@@ -101,20 +105,115 @@ print(f'{len(c)} etiquetas en uso, sobre {sum(c.values())} aplicaciones')
 "
 ```
 
-El resultado decide el final de este documento, que será una de estas dos frases:
+### Resultado (ejecutado el 20 de agosto de 2026)
 
-- **Hay vocabulario útil** → se escribe aquí la tabla de equivalencias Chatwoot → `VALID_TAGS`
-  y esto pasa a ser un item de implementación. Estimación: media jornada, porque el 90% del
-  camino (autenticación, paginado, cruce por teléfono) ya está construido.
-- **No hay etiquetas, o son ruido** → queda escrito que la API sí lo permite pero que **no hay
-  dato que traer**. La alternativa es la que ya está en marcha: el etiquetado propio del
-  dashboard, que además tiene un vocabulario cerrado y auditable que Chatwoot no ofrece.
+**Hay vocabulario útil.** 12 etiquetas en el catálogo de la cuenta, las 12 en uso, con 86
+aplicaciones repartidas así:
 
-> **Resultado del inventario:** _(pendiente de ejecutar contra la instancia real)_
+| Etiqueta en Chatwoot | Usos |
+|---|---:|
+| `lead-interesado` | 37 |
+| `llamada-aly` | 19 |
+| `llamsincon` | 9 |
+| `demo` | 5 |
+| `prueba` | 5 |
+| `llamada` | 3 |
+| `cliente` | 3 |
+| `no-desea` | 1 |
+| `no-aplica` | 1 |
+| `devolver-llamada` | 1 |
+| `numero-apagado` | 1 |
+| `free-trial` | 1 |
+
+Para dimensionarlo: el dataset tiene 528 leads, así que esto cubre como mucho un 15% de la
+base. **Es un aporte, no un sustituto del etiquetado propio.**
 
 ---
 
-## 4. Nota al margen: ¿y si «etiquetas del chatbot» eran otras?
+## 4. Tabla de equivalencias
+
+Nueve de las doce traducen sin ambigüedad:
+
+| Chatwoot | → dashboard | Nota |
+|---|---|---|
+| `lead-interesado` | `lead_interesado` | directa |
+| `llamada` | `llamada` | directa |
+| `llamada-aly` | `llamada` **+** `alyssa` | dos etiquetas de grupos distintos, ver abajo |
+| `llamsincon` | `llamada_no_responde` | «llamada sin contestar» |
+| `numero-apagado` | `llamada_no_responde` | |
+| `devolver-llamada` | `insistir` | |
+| `no-desea` | `perdido` | pero ver el carril del §5 |
+| `cliente` | `cliente` | pero ver el carril del §5 |
+| `free-trial` | `free_trial` | pero ver el carril del §5 |
+
+**`llamada-aly` es el hallazgo que más vale.** Con 19 usos es la segunda más aplicada, y
+codifica algo que el dashboard no puede sacar de ninguna otra fuente: **quién atendió al
+lead**. Traducirla asigna responsable a 19 leads de golpe, y el responsable es justo lo que
+decide a quién se dirige una alerta automática.
+
+### Las tres que NO se pueden traducir solas
+
+1. **`demo` (5 usos)** — el dashboard distingue `demo_agendada` de `demo_realizada`, y
+   Chatwoot no. Agendada y realizada no son lo mismo para el embudo: una es una promesa y la
+   otra un hecho. **Hace falta decidir a cuál corresponde**, o mirar esas 5 conversaciones.
+
+2. **`prueba` (5 usos)** — ambigua y **la más peligrosa**. Puede significar «empezó la prueba
+   gratis» o «esta conversación es una prueba interna». Que el catálogo tenga además
+   `free-trial` por separado hace sospechar que no son sinónimos. Si significa lo segundo y
+   se importa como `free_trial`, se mete ruido en la columna que alimenta el modelo de la
+   tesis. **Hasta aclararlo, esta etiqueta no se importa.**
+
+3. **`no-aplica` (1 uso)** — no hay equivalente. Lo más cercano es `perdido`, pero «no aplica»
+   suena a que nunca fue un lead válido, que es otra cosa. Con un solo uso, no merece decidir
+   nada: se reporta y se etiqueta a mano.
+
+---
+
+## 5. El carril: qué puede escribir Chatwoot y qué no
+
+Aquí se concreta el problema del §2.3 con los datos ya sobre la mesa.
+
+`cliente`, `free-trial` y `no-desea` caen sobre `cliente` / `free_trial` / `perdido`, que son
+exactamente las tres etiquetas que **`sync_planes` reescribe cada mañana** desde mau-web
+(`PLAN_TAGS`, [`app/sync_planes.py:90-94`](../app/sync_planes.py)). Importarlas produciría
+uno de estos dos desenlaces, los dos malos:
+
+- En los 30 leads que cruzaron con una cuenta, el sync las borraría a la mañana siguiente.
+- En los 498 que no cruzaron, sobrevivirían — dando un criterio distinto según el lead, que
+  es peor que no tener criterio.
+
+**Regla, entonces:**
+
+> Chatwoot manda sobre las etiquetas de **flujo de venta** (`lead_interesado`, `llamada`,
+> `llamada_no_responde`, `insistir`, `demo_*`) y sobre el **responsable**.
+> mau-web sigue mandando sobre `cliente` / `free_trial` / `perdido`, porque ahí es un hecho
+> del sistema de suscripciones y no la opinión de un agente.
+
+Con ese recorte, lo importable son **70 de las 86 aplicaciones** — y las 16 que se quedan
+fuera son justo las que mau-web ya sabe mejor.
+
+---
+
+## 6. Veredicto
+
+**Se puede, y el dato sirve.** Esto pasa de pregunta a item de implementación:
+
+1. Leer `labels` en `cw_list_conversations()` (ya llega en el JSON) y unirlas por teléfono.
+2. Traducir con la tabla del §4, saltando `prueba` y `no-aplica`, y **reportando** cualquier
+   etiqueta nueva que aparezca en vez de inventarle un equivalente.
+3. Escribir solo en el carril del §5, y **nunca** sobre `PLAN_TAGS`.
+4. Primera versión en modo informe (`--dry-run`): cuántos leads recibirían qué, antes de
+   escribir nada.
+
+Estimación: media jornada. El 90% del camino —autenticación, paginado, cruce por teléfono—
+ya está construido para el backfill.
+
+**Antes de empezar hacen falta dos respuestas:** qué significa `demo` (¿agendada o realizada?)
+y qué significa `prueba` (¿prueba gratis o conversación de prueba?).
+
+---
+
+## 7. Nota al margen: ¿y si «etiquetas del chatbot» eran otras?
 
 Si lo que se pedía eran las etiquetas de la **app de WhatsApp Business** (las de Meta, no las
 de Chatwoot), ese es un camino distinto y habría que verificarlo aparte.
