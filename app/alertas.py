@@ -65,7 +65,7 @@ TIPOS = {
 ALERTAS_TECNICO_CORREOS = [c.strip() for c in os.getenv("ALERTAS_TECNICO_CORREOS", "").split(";") if c.strip()]
 
 TIPOS_SISTEMA = {
-    "fuente_muda": "No están entrando leads",
+    "fuente_muda": "Sin actividad en el inbox",
     "pasada_fallida": "La actualización diaria falló",
 }
 
@@ -478,7 +478,7 @@ def _mensaje_fuente(tipo: str, f: dict) -> tuple[str, str, str]:
     if tipo == "pasada_fallida":
         titulo = "La actualización diaria falló"
         cuerpo = [
-            f"La pasada que trae las conversaciones de Chatwoot no pudo correr.",
+            "La pasada que trae las conversaciones de Chatwoot no pudo correr.",
             f"Motivo: {f['fallo']}",
             "",
             f"Último intento: {revisada}",
@@ -488,22 +488,31 @@ def _mensaje_fuente(tipo: str, f: dict) -> tuple[str, str, str]:
             "El dashboard sigue mostrando lo último que se trajo. Se reintenta solo mañana.",
         ]
     else:
-        titulo = "No están entrando leads"
+        # El titulo y el cuerpo dicen el HECHO y dejan la causa abierta. Antes afirmaban que la
+        # fuente estaba rota, y la primera vez que esto salto de verdad la causa era una campaña
+        # de anuncios parada: no habia nada averiado. Un aviso que exagera se deja de creer en
+        # cuanto alguien lo pilla una vez, y entonces deja de servir para lo que se hizo.
+        titulo = "Sin actividad en el inbox"
         cuerpo = [
-            f"La última conversación recibida en Chatwoot es del {_local(f['ultima_actividad'])} "
-            f"({_hace(f['horas_sin_actividad'])}).",
+            f"La última conversación con actividad es del {_local(f['ultima_actividad'])} "
+            f"({_hace(f['horas_sin_actividad'])}), y el dashboard muestra lo mismo desde entonces.",
             "",
-            "Lo que se ve en el dashboard está congelado desde entonces. No es que no haya "
-            "novedades: es que la fuente no está trayendo ninguna.",
+            f"El inbox se leyó sin problemas ({f['conversaciones']} conversaciones), así que la "
+            "conexión con Chatwoot y su API funcionan. Lo que no hay son mensajes nuevos. Desde "
+            "aquí no se puede distinguir si es que no está escribiendo nadie o si algo se cortó "
+            "antes de llegar a Chatwoot.",
             "",
             f"Última revisión: {revisada}",
-            f"Conversaciones vistas en el inbox: {f['conversaciones']}",
             f"Leads nuevos o modificados: {f['nuevos']}",
             "",
             "Qué mirar, por orden:",
-            "  1. El canal de WhatsApp del inbox en Chatwoot: es la API de Meta y su token caduca.",
-            "  2. El workflow de n8n que atiende las conversaciones.",
-            "  3. docker ps, por si algún contenedor figura unhealthy.",
+            "  1. La campaña Click-to-WhatsApp en Meta Ads Manager: estado y presupuesto. Si los "
+            "leads entran por anuncios, una campaña parada da exactamente esto y no hay nada roto. "
+            "Fue la causa la primera vez que llegó este aviso.",
+            "  2. Si Meta sigue entregando mensajes de leads, y no solo acuses de entrega:",
+            "     docker logs --since 48h chatwoot_web | grep '\"from\" =>' | wc -l",
+            "     Si sale 0 pero hay POST a /webhooks/whatsapp, la tubería va y no escribe nadie.",
+            "  3. El token de WhatsApp del inbox (caduca) y el workflow de n8n.",
         ]
 
     pie = (f"Aviso técnico automático de MAU. Salta cuando pasan {f['umbral_horas']} horas sin "

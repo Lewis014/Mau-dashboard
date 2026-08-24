@@ -938,12 +938,21 @@ function renderFrescura(f) {
       Lo que ves es lo último que sí se pudo traer.</span>` + botonTraer();
   } else if (f.muda) {
     el.className = 'frescura frescura-mal';
-    const desde = f.ultima_actividad
-      ? `La última conversación recibida es del <b>${esc(fmtFechaHora(f.ultima_actividad))}</b> (${hace(f.horas_sin_actividad)}).`
-      : 'No se encontró ninguna conversación en el inbox.';
-    el.innerHTML = `<span>${SVG_FRESCURA_MAL}<b>La entrada de leads está detenida.</b> ${desde}
-      Lo que ves aquí está congelado desde entonces: no es que no haya novedades, es que no
-      están llegando.</span>` + botonTraer();
+    // Se dice el hecho y se dejan las dos causas abiertas. Desde aquí NO se puede distinguir
+    // «no escribe nadie» de «se cortó la conexión»: lo único que se ve es que el inbox no se
+    // mueve. La primera vez que esto saltó, la causa era una campaña de anuncios parada, y
+    // dar por hecho que estaba roto habría mandado a buscar la avería al sitio equivocado.
+    // Sí se puede afirmar que el inbox se leyó bien: esta rama solo se alcanza sin fallo.
+    const leidas = f.conversaciones != null
+      ? `El inbox se leyó correctamente (${f.conversaciones} conversaciones), pero ninguna tiene mensajes nuevos`
+      : 'El inbox se leyó correctamente, pero ninguna conversación tiene mensajes nuevos';
+    el.innerHTML = (f.ultima_actividad
+      ? `<span>${SVG_FRESCURA_MAL}<b>Sin actividad desde el ${esc(fmtFechaHora(f.ultima_actividad))}</b>
+         (${hace(f.horas_sin_actividad)}). ${leidas}: o no está escribiendo nadie, o algo se
+         cortó antes de llegar a Chatwoot.</span>`
+      : `<span>${SVG_FRESCURA_MAL}<b>No se encontró ninguna conversación en el inbox.</b>
+         Eso no es un día tranquilo: o cambió la conexión con Chatwoot, o no se está mirando
+         el inbox correcto.</span>`) + botonTraer();
   } else {
     el.className = 'frescura';
     el.innerHTML = `<span>${SVG_FRESCURA_OK}Datos al día · última conversación
