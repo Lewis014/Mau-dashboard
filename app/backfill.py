@@ -344,6 +344,32 @@ async def upsert_lead(conn: asyncpg.Connection, lead_id: str, session_id: str,
     )
 
 
+# ── Registro de la pasada ────────────────────────────────────────────────────
+
+REGISTRO_SQL = """
+INSERT INTO pasadas_backfill (
+    origen, conversaciones, ultima_actividad,
+    nuevos, sin_cambios, descartados, errores, fallo
+) VALUES ($1, $2, to_timestamp($3::double precision), $4, $5, $6, $7, $8)
+"""
+
+
+async def registrar_pasada(conn: asyncpg.Connection, origen: str, c: dict,
+                           fallo: Optional[str] = None) -> None:
+    """Deja constancia de la pasada: cuando corrio, que trajo y hasta cuando llega la fuente.
+
+    Existe porque sin esto no hay forma de saber si el dashboard esta al dia. Paso de verdad:
+    la entrada de leads estuvo tres dias parada y en pantalla todo se veia normal, porque el
+    unico dato con pinta de reciente (updated_at) lo mueve el sync de planes cada mañana aunque
+    no haya entrado un solo mensaje. La columna que importa es `ultima_actividad`.
+    """
+    await conn.execute(
+        REGISTRO_SQL, origen, c.get("conversaciones"),
+        float(ua) if (ua := c.get("ultima_actividad")) else None,
+        c.get("ok", 0), c.get("igual", 0), c.get("skip", 0), c.get("err", 0), fallo,
+    )
+
+
 # ── Procesamiento comun (independiente de la fuente) ─────────────────────────
 
 def _huella(transcript: str) -> str:
@@ -391,11 +417,20 @@ async def process_one(args, conn, client, lead_id, transcript, total, substantiv
 async def run_chatwoot(args, conn, client, c) -> None:
     if not CHATWOOT_TOKEN:
         raise SystemExit("Falta CHATWOOT_API_TOKEN en el entorno.")
-    convs = cw_list_conversations()
+    convs = [cv for cv in cw_list_conversations() if cv.get("inbox_id") == CHATWOOT_INBOX]
+
+    # Ultima vez que se movio ALGO en el inbox. Sale de la lista que ya se acaba de traer, sin
+    # una sola llamada extra, y es el unico dato que responde de verdad «¿cuando escribio el
+    # ultimo lead?»: updated_at lo tocan el scoring y el sync de planes aunque no entre nada,
+    # y captured_at solo se mueve con leads nuevos, no cuando una conversacion vieja sigue.
+    # De aqui cuelga todo el aviso de frescura (ver registrar_pasada y app/alertas.py).
+    marcas = [t for cv in convs
+              if isinstance(t := cv.get("last_activity_at"), (int, float)) and t]
+    c["conversaciones"] = len(convs)
+    c["ultima_actividad"] = max(marcas) if marcas else None
+
     by_phone: dict[str, list[int]] = {}
     for cv in convs:
-        if cv.get("inbox_id") != CHATWOOT_INBOX:
-            continue
         sender = (cv.get("meta") or {}).get("sender") or {}
         phone = (sender.get("phone_number") or "").replace("+", "").strip()
         if phone:
@@ -497,6 +532,8 @@ async def run(args: argparse.Namespace) -> None:
             )
         }
 
+    fallo: Optional[str] = None
+    completada = False
     try:
         if args.source == "chatwoot":
             await run_chatwoot(args, conn, client, c)
@@ -514,8 +551,22 @@ async def run(args: argparse.Namespace) -> None:
               f"  errores={c['err']}"
               + (f"  ya-existentes={exist}" if args.skip_existing else "")
               + (f"  | con intervencion humana={humano}" if args.source == "chatwoot" else ""))
+        completada = True
         return c
+    except (Exception, SystemExit) as e:  # noqa: BLE001 — se anota y se vuelve a lanzar
+        fallo = f"{type(e).__name__}: {e}"
+        raise
     finally:
+        # Se registra tambien la pasada que revento: «no pudo correr» es justo lo que hay que
+        # avisar, y sin dejar rastro se confundiria con «no habia nada nuevo», que es el mismo
+        # silencio con causa opuesta. Las parciales quedan fuera (dry-run, --only-lead,
+        # --limit): son una foto incompleta y falsearian la frescura.
+        parcial = bool(args.dry_run or args.only_lead or args.limit)
+        if (completada or fallo) and not parcial:
+            try:
+                await registrar_pasada(conn, getattr(args, "origen", "cli"), c, fallo)
+            except Exception as e:  # noqa: BLE001 — anotar no puede tumbar la pasada
+                print(f"[registro] no se pudo anotar la pasada: {e}", flush=True)
         await conn.close()
 
 
@@ -530,6 +581,9 @@ def parse_args() -> argparse.Namespace:
                    help="Omite leads que ya tienen transcript (solo procesa los nuevos; ahorra llamadas a Claude).")
     p.add_argument("--reextraer", action="store_true",
                    help="Re-extrae aunque la conversacion no haya cambiado (util si cambio el prompt o el modelo).")
+    # Quien lanzo la pasada. Queda en pasadas_backfill para poder distinguir, al mirar el
+    # historial, la automatica de las 07:00 de un boton pulsado a mano.
+    p.set_defaults(origen="cli")
     return p.parse_args()
 
 

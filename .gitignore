@@ -5,4 +5,7 @@ __pycache__/
 *.md
 # Los documentos de decisiones si se versionan; los borradores sueltos de la tesis no.
 !docs/*.md
+# El README del MCP es lo que se le pasa a quien lo instala: tiene que viajar con el.
+!mau-mcp/*.md
 /ml
+/mau-mcp

@@ -102,6 +102,12 @@ LOCAL_TZ = os.getenv("LOCAL_TZ", "America/Lima")
 # no hay nada que cambie mas rapido.
 SYNC_PLANES_HORA = int(os.getenv("SYNC_PLANES_HORA", "7"))
 
+# Horas sin que nadie escriba en el inbox a partir de las cuales se considera que la fuente
+# esta muda: el dashboard lo dice en pantalla y sale un aviso (app/alertas.py, revisar_fuente).
+# Con el ritmo normal de ~7 leads al dia, un dia entero en blanco ya es una anomalia; 0 lo
+# fuerza siempre, que es como se prueba que el aviso llega de verdad.
+FUENTE_MUDA_HORAS = int(os.getenv("ALERTAS_FUENTE_HORAS", "24"))
+
 # Limites de los campos de seguimiento. El siguiente paso es CORTO a proposito: si admite
 # un parrafo deja de ser una accion y se convierte en otra nota.
 NOTA_MAX = 2000
@@ -158,6 +164,122 @@ def _en_hilo(corutina_factory):
     return asyncio.to_thread(lambda: asyncio.run(corutina_factory()))
 
 
+# Estado de la ultima pasada de backfill lanzada desde este proceso, para que el boton
+# «Traer leads nuevos» pueda informar del avance: la pasada tarda minutos y no cabe en el
+# tiempo de una peticion HTTP.
+_backfill_estado: dict = {"estado": "inactivo", "origen": None, "desde": None,
+                          "hasta": None, "resultado": None, "detalle": None}
+# Referencia viva a la pasada lanzada desde el boton. asyncio solo guarda referencias debiles
+# a las tareas: sin esto, el recolector puede llevarse una pasada de veinte minutos a la mitad,
+# y el sintoma seria un backfill que "a veces" no termina.
+_backfill_tarea: Optional[asyncio.Task] = None
+
+
+def backfill_estado() -> dict:
+    """Copia del estado, para que quien lo lea no pueda modificarlo sin querer."""
+    return {**_backfill_estado, "corriendo": _backfill_estado["estado"] == "corriendo"}
+
+
+def _marcar_backfill_iniciado(origen: str) -> bool:
+    """Reserva el turno, o devuelve False si ya hay una pasada en marcha.
+
+    Es SINCRONA a proposito: sin un await por medio, entre la comprobacion y la reserva no
+    puede colarse nadie, asi que hace de exclusion mutua sin necesidad de un lock. Y tiene que
+    reservarse aqui y no dentro de la pasada, porque el endpoint responde ANTES de que la
+    tarea llegue a ejecutarse: si el estado se marcara alla, la primera consulta de avance
+    leeria «inactivo» y el dashboard daria por terminada una pasada que aun no ha empezado.
+
+    El turno importa: dos barridos a la vez sobre las mismas conversaciones pagarian dos veces
+    la extraccion con Claude y competirian por escribir las mismas filas.
+    """
+    if _backfill_estado["estado"] == "corriendo":
+        return False
+    _backfill_estado.update(estado="corriendo", origen=origen,
+                            desde=datetime.now(timezone.utc).isoformat(),
+                            hasta=None, resultado=None, detalle=None)
+    return True
+
+
+async def _correr_backfill(origen: str) -> dict:
+    """La pasada en si. El turno ya viene reservado por _marcar_backfill_iniciado().
+
+    `origen` queda anotado en pasadas_backfill para poder distinguir despues, mirando el
+    historial, la automatica de las 07:00 de un boton pulsado a mano.
+    """
+    # TODO dentro del try, importaciones incluidas: si algo revienta antes de empezar (por
+    # ejemplo el import de anthropic) y el estado se quedara en «corriendo», el turno no se
+    # soltaria nunca y el boton quedaria muerto hasta reiniciar el contenedor, sin que nada
+    # lo explicara en pantalla.
+    try:
+        import argparse
+
+        from app.backfill import run as correr_backfill
+
+        opciones = argparse.Namespace(source="chatwoot", dry_run=False, limit=0,
+                                      only_lead=None, skip_existing=False,
+                                      reextraer=False, origen=origen)
+        c = await _en_hilo(lambda: correr_backfill(opciones))
+    except BaseException as e:  # noqa: BLE001 — Chatwoot caido, cuota de Claude, cancelacion...
+        _backfill_estado.update(estado="error", hasta=datetime.now(timezone.utc).isoformat(),
+                                detalle=f"{type(e).__name__}: {e}")
+        raise
+    resumen = {"nuevos": c["ok"], "sin_cambios": c.get("igual", 0),
+               "descartados": c["skip"], "errores": c["err"],
+               "conversaciones": c.get("conversaciones")}
+    _backfill_estado.update(estado="listo", hasta=datetime.now(timezone.utc).isoformat(),
+                            resultado=resumen)
+    return resumen
+
+
+async def correr_backfill_una_vez(origen: str) -> dict:
+    """Reserva el turno y corre la pasada. Es la puerta para quien la espera de verdad."""
+    if not _marcar_backfill_iniciado(origen):
+        raise RuntimeError("Ya hay una pasada en curso")
+    return await _correr_backfill(origen)
+
+
+SQL_ULTIMA_PASADA = """
+SELECT corrida_at, origen, conversaciones, ultima_actividad,
+       nuevos, sin_cambios, descartados, errores, fallo
+  FROM pasadas_backfill
+ ORDER BY corrida_at DESC
+ LIMIT 1
+"""
+
+
+async def estado_fuente(conn) -> dict:
+    """¿Sigue entrando algo por WhatsApp, o el dashboard esta mostrando una foto congelada?
+
+    Una sola definicion de «muda» para la pantalla y para el correo: si cada uno tuviera la
+    suya, el dia que discrepen nadie sabria a cual creer.
+    """
+    fila = await conn.fetchrow(SQL_ULTIMA_PASADA)
+    if not fila:
+        # Todavia no ha corrido ninguna pasada completa (recien desplegado). No saberlo no es
+        # lo mismo que estar muda: alarmar aqui seria un falso positivo garantizado en cada
+        # despliegue, y la primera alerta que llega siendo mentira ya no se cree ninguna.
+        return {"conocido": False, "muda": False, "umbral_horas": FUENTE_MUDA_HORAS,
+                "ultima_actividad": None, "horas_sin_actividad": None, "ultima_pasada": None,
+                "origen": None, "conversaciones": None, "nuevos": None, "fallo": None}
+
+    ua = fila["ultima_actividad"]
+    horas = (datetime.now(timezone.utc) - ua).total_seconds() / 3600 if ua else None
+    return {
+        "conocido": True,
+        "ultima_actividad": ua.isoformat() if ua else None,
+        "horas_sin_actividad": round(horas, 1) if horas is not None else None,
+        # Sin ultima_actividad y sin fallo significa que el inbox se leyo entero y no habia ni
+        # una conversacion: no es un dia tranquilo, es que la fuente no esta.
+        "muda": ua is None or horas >= FUENTE_MUDA_HORAS,
+        "umbral_horas": FUENTE_MUDA_HORAS,
+        "ultima_pasada": fila["corrida_at"].isoformat(),
+        "origen": fila["origen"],
+        "conversaciones": fila["conversaciones"],
+        "nuevos": fila["nuevos"],
+        "fallo": fila["fallo"],
+    }
+
+
 async def _tareas_diarias():
     """Pasada diaria: traer conversaciones -> puntuarlas -> estado comercial -> alertas.
 
@@ -172,8 +294,7 @@ async def _tareas_diarias():
     """
     import argparse
 
-    from app.alertas import revisar_y_avisar
-    from app.backfill import run as correr_backfill
+    from app.alertas import revisar_fuente, revisar_y_avisar
     from app.score_leads import run as correr_scoring
     from app.sync_planes import sincronizar
 
@@ -183,15 +304,26 @@ async def _tareas_diarias():
         # Sin ANTHROPIC_API_KEY no hay extraccion posible; se salta en vez de fallar 583 veces.
         if os.getenv("ANTHROPIC_API_KEY"):
             try:
-                opciones = argparse.Namespace(source="chatwoot", dry_run=False, limit=0,
-                                              only_lead=None, skip_existing=False, reextraer=False)
-                c = await _en_hilo(lambda: correr_backfill(opciones))
-                print(f"[backfill] nuevos/cambiados={c['ok']} sin-cambios={c.get('igual', 0)} "
-                      f"descartados={c['skip']} errores={c['err']}", flush=True)
+                r = await correr_backfill_una_vez("diaria")
+                print(f"[backfill] nuevos/cambiados={r['nuevos']} sin-cambios={r['sin_cambios']} "
+                      f"descartados={r['descartados']} errores={r['errores']}", flush=True)
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001 — Chatwoot caido, cuota de Claude...
                 print(f"[backfill] fallo: {e}", flush=True)
+
+        # Va JUSTO despues del backfill para leer la fila que este acaba de anotar. Avisa de lo
+        # que ninguna otra alerta puede ver: que no entra nada. Las demas miran leads, y cuando
+        # la fuente se calla no hay ningun lead nuevo del que sospechar — el dashboard se queda
+        # con la foto de ayer y todo parece normal. Ya paso: tres dias congelado sin un aviso.
+        try:
+            async with db.get_pool().acquire() as conn:
+                f = await revisar_fuente(conn)
+            print(f"[fuente] {f['resumen']}", flush=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 — SMTP caido, tabla recien creada...
+            print(f"[fuente] fallo: {e}", flush=True)
 
         # Puntua solo los que tienen conversion_prob NULL: los nuevos y aquellos cuyo
         # transcript cambio (el upsert del backfill se lo acaba de anular).
@@ -428,6 +560,47 @@ async def lifespan(app: FastAPI):
           clave      text NOT NULL,
           enviada_at timestamptz NOT NULL DEFAULT now(),
           PRIMARY KEY (lead_id, tipo, clave)
+        )
+        """
+    )
+
+    # Historial de pasadas del backfill. `ultima_actividad` es la razon de ser de la tabla: la
+    # ultima vez que alguien escribio en el inbox de Chatwoot. Ninguna columna de leads_dataset
+    # responde eso — updated_at lo mueven el scoring y el sync de planes cada mañana aunque no
+    # entre un solo mensaje, y captured_at solo cambia con leads nuevos. Sin este dato, una
+    # fuente muerta y un dia tranquilo se ven exactamente igual desde el dashboard.
+    await pool.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pasadas_backfill (
+          id               bigserial PRIMARY KEY,
+          corrida_at       timestamptz NOT NULL DEFAULT now(),
+          origen           text NOT NULL,
+          conversaciones   integer,
+          ultima_actividad timestamptz,
+          nuevos           integer,
+          sin_cambios      integer,
+          descartados      integer,
+          errores          integer,
+          fallo            text
+        )
+        """
+    )
+    # Solo se consulta la ultima, y siempre por fecha: el indice descendente la deja en O(1)
+    # por mucho que crezca el historial.
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pasadas_backfill_at ON pasadas_backfill (corrida_at DESC)"
+    )
+
+    # Antiduplicado de las alertas de sistema. Espejo de lead_alertas pero SIN clave ajena: la
+    # fuente muda no es el problema de ningun lead concreto, y colgarla de uno la borraria el
+    # dia que ese lead desapareciera.
+    await pool.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sistema_alertas (
+          tipo       text NOT NULL,
+          clave      text NOT NULL,
+          enviada_at timestamptz NOT NULL DEFAULT now(),
+          PRIMARY KEY (tipo, clave)
         )
         """
     )
@@ -712,6 +885,10 @@ async def stats(
         "por_plan_estado": {r["plan_estado"]: r["n"] for r in planes},
         "por_outcome": {r["outcome"]: r["n"] for r in outcomes},
         "primer_lead": primer.isoformat() if primer else None,
+        # Tampoco lleva el filtro de fecha: la frescura es del sistema entero, no del rango
+        # que se este mirando. Acotar agosto no puede hacer que unos datos viejos parezcan
+        # recientes, que es justo el espejismo que este bloque viene a evitar.
+        "fuente": await estado_fuente(pool),
     }
 
 
@@ -979,6 +1156,44 @@ async def generate_brief(lead_id: str, _=Depends(check_auth)):
         lead_id,
     )
     return {"brief": build_brief(db.row_to_dict(row), dict(nota) if nota else None)}
+
+
+@app.post("/api/backfill", status_code=202)
+async def backfill_ahora(_=Depends(check_auth)):
+    """Trae de Chatwoot las conversaciones nuevas sin esperar a la pasada de las 07:00.
+
+    Devuelve 202 y sigue en segundo plano: el barrido tarda minutos (cientos de conversaciones,
+    la paginacion de mensajes y una llamada a Claude por cada una que cambio), muchisimo mas de
+    lo que aguanta una peticion HTTP. El avance se consulta en /api/backfill/estado.
+
+    Existe porque hasta ahora, si a media tarde faltaba un lead con el que se acababa de hablar,
+    no habia nada que pulsar: tocaba esperar a la mañana siguiente.
+    """
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        raise HTTPException(status_code=503, detail="Falta ANTHROPIC_API_KEY: no hay extraccion posible")
+    # Reservar ANTES de crear la tarea: asi la respuesta ya sale diciendo «corriendo» y el
+    # dashboard no puede sondear el estado antes de que la pasada se haya marcado.
+    if not _marcar_backfill_iniciado("manual"):
+        raise HTTPException(status_code=409, detail="Ya hay una actualizacion en curso")
+
+    global _backfill_tarea
+
+    async def _lanzar():
+        try:
+            await _correr_backfill("manual")
+        except Exception as e:  # noqa: BLE001 — queda en _backfill_estado, que es quien lo cuenta
+            print(f"[backfill/manual] fallo: {e}", flush=True)
+
+    # Nadie espera esta tarea: su resultado vive en _backfill_estado y se consulta aparte. La
+    # referencia en _backfill_tarea no es decorativa, evita que el recolector se la lleve.
+    _backfill_tarea = asyncio.create_task(_lanzar())
+    return backfill_estado()
+
+
+@app.get("/api/backfill/estado")
+async def backfill_progreso(_=Depends(check_auth)):
+    """Como va la pasada lanzada a mano. El dashboard lo consulta cada pocos segundos."""
+    return backfill_estado()
 
 
 @app.post("/api/sync-planes")

@@ -35,7 +35,8 @@ from typing import Optional
 import asyncpg
 
 from app import correo
-from app.main import LOCAL_TZ, SYNC_PLANES_HORA, TAG_GROUPS, hoy_local, parse_pares
+from app.main import (FUENTE_MUDA_HORAS, LOCAL_TZ, SYNC_PLANES_HORA, TAG_GROUPS,
+                      _tz_local, estado_fuente, hoy_local, parse_pares)
 
 ALERTAS_WEBHOOK_URL = os.getenv("ALERTAS_WEBHOOK_URL", "")
 ALERTAS_WEBHOOK_TOKEN = os.getenv("ALERTAS_WEBHOOK_TOKEN", "")
@@ -58,6 +59,16 @@ TIPOS = {
     "pago_estancado": "Pago sin aprobar",
 }
 
+# Avisos de sistema: no son de ningun lead ni de ningun vendedor. Van a quien pueda ARREGLARLOS,
+# que no es el equipo comercial — Ali no puede renovar un token de Meta ni levantar n8n, y
+# mandarle un aviso sobre el que no puede actuar solo la entrena para ignorar los que si.
+ALERTAS_TECNICO_CORREOS = [c.strip() for c in os.getenv("ALERTAS_TECNICO_CORREOS", "").split(";") if c.strip()]
+
+TIPOS_SISTEMA = {
+    "fuente_muda": "No están entrando leads",
+    "pasada_fallida": "La actualización diaria falló",
+}
+
 
 def correos_de(dueno: str) -> list[str]:
     """Direcciones de esa persona. Varias separadas por ';' (una del trabajo, otra personal)."""
@@ -70,6 +81,13 @@ def estado_config() -> str:
     Dice explicitamente QUIEN se queda sin recibir nada: una alerta que no sale no da error
     en ningun sitio, y sin esta linea el fallo solo se nota cuando ya se perdio un cliente.
     """
+    # El aviso tecnico se informa siempre, tenga o no canal el resto: es el que avisa de que
+    # NO ESTAN ENTRANDO LEADS, y quedarse sin el es peor que quedarse sin los comerciales.
+    tecnico = (f"fuente muda ({FUENTE_MUDA_HORAS}h) -> {', '.join(ALERTAS_TECNICO_CORREOS)}"
+               if ALERTAS_TECNICO_CORREOS and correo.configurado()
+               else "fuente muda: SIN DESTINATARIO (falta ALERTAS_TECNICO_CORREOS"
+                    + ("" if correo.configurado() else " y la configuración de correo") + ")")
+
     canales = []
     if correo.configurado():
         con = sorted(d for d in TAG_GROUPS["responsable"] if correos_de(d))
@@ -80,10 +98,10 @@ def estado_config() -> str:
         canales.append("webhook")
     if not canales:
         return ("desactivadas: no hay canal (falta ALERTAS_CORREOS + MAIL_* , "
-                "o ALERTAS_WEBHOOK_URL). Las reglas se evalúan pero nadie recibe nada.")
+                f"o ALERTAS_WEBHOOK_URL). Las reglas se evalúan pero nadie recibe nada. | {tecnico}")
     dueno = ALERTAS_DUENO_DEFECTO or "(ninguno: los leads sin responsable no generan alerta)"
     return (f"{' + '.join(canales)} | trial: {ALERTAS_TRIAL_DIAS} días antes | "
-            f"pago: {ALERTAS_PAGO_DIAS} días sin aprobar | dueño por defecto: {dueno}")
+            f"pago: {ALERTAS_PAGO_DIAS} días sin aprobar | dueño por defecto: {dueno} | {tecnico}")
 
 
 def _responsable(tags: Optional[list[str]]) -> Optional[str]:
@@ -428,4 +446,152 @@ async def revisar_y_avisar(conn: asyncpg.Connection) -> dict:
         else:
             await _soltar(conn, nuevas)
 
+    return r
+
+
+# ── Aviso de sistema: la fuente dejo de traer leads ──────────────────────────
+
+def _hace(horas: Optional[float]) -> str:
+    """«hace 5 horas» / «hace 3 días», para no obligar a nadie a restar fechas de cabeza."""
+    if horas is None:
+        return "nunca"
+    if horas < 48:
+        h = int(round(horas))
+        return f"hace {h} hora{'s' if h != 1 else ''}"
+    return f"hace {int(horas // 24)} días"
+
+
+def _local(iso: Optional[str]) -> str:
+    """ISO en UTC -> '20/08/2026 a las 17:07' en hora de Lima.
+
+    El contenedor corre en UTC: sin convertir, el correo diria que la ultima conversacion fue
+    a las 22:07 y quien lo lea buscaria en el sitio equivocado del historial.
+    """
+    if not iso:
+        return "—"
+    return datetime.fromisoformat(iso).astimezone(_tz_local()).strftime("%d/%m/%Y a las %H:%M")
+
+
+def _mensaje_fuente(tipo: str, f: dict) -> tuple[str, str, str]:
+    """(asunto, texto, html) del aviso. Dice que pasa, desde cuando y que mirar."""
+    revisada = f"{_local(f['ultima_pasada'])} ({f['origen'] or 'automática'})"
+    if tipo == "pasada_fallida":
+        titulo = "La actualización diaria falló"
+        cuerpo = [
+            f"La pasada que trae las conversaciones de Chatwoot no pudo correr.",
+            f"Motivo: {f['fallo']}",
+            "",
+            f"Último intento: {revisada}",
+            f"Última conversación que sí llegó a entrar: {_local(f['ultima_actividad'])} "
+            f"({_hace(f['horas_sin_actividad'])}).",
+            "",
+            "El dashboard sigue mostrando lo último que se trajo. Se reintenta solo mañana.",
+        ]
+    else:
+        titulo = "No están entrando leads"
+        cuerpo = [
+            f"La última conversación recibida en Chatwoot es del {_local(f['ultima_actividad'])} "
+            f"({_hace(f['horas_sin_actividad'])}).",
+            "",
+            "Lo que se ve en el dashboard está congelado desde entonces. No es que no haya "
+            "novedades: es que la fuente no está trayendo ninguna.",
+            "",
+            f"Última revisión: {revisada}",
+            f"Conversaciones vistas en el inbox: {f['conversaciones']}",
+            f"Leads nuevos o modificados: {f['nuevos']}",
+            "",
+            "Qué mirar, por orden:",
+            "  1. El canal de WhatsApp del inbox en Chatwoot: es la API de Meta y su token caduca.",
+            "  2. El workflow de n8n que atiende las conversaciones.",
+            "  3. docker ps, por si algún contenedor figura unhealthy.",
+        ]
+
+    pie = (f"Aviso técnico automático de MAU. Salta cuando pasan {f['umbral_horas']} horas sin "
+           f"que nadie escriba (ALERTAS_FUENTE_HORAS) y se repite una vez al día mientras siga "
+           f"así. Te llega a ti porque figuras en ALERTAS_TECNICO_CORREOS.")
+    texto = f"MAU · {titulo}\n\n" + "\n".join(cuerpo) + f"\n\n{pie}"
+    if DASHBOARD_URL:
+        texto += f"\n{DASHBOARD_URL}/"
+
+    lineas = "".join(
+        f'<p style="font:15px/1.6 Arial,sans-serif;color:#1e293b;margin:0 0 10px">{_esc(l)}</p>'
+        if l else '<div style="height:6px"></div>' for l in cuerpo
+    )
+    html = (
+        '<div style="max-width:600px;margin:0 auto;padding:24px;background:#ffffff">'
+        '<div style="font:800 20px Georgia,serif;color:#1e3a8a">MAU</div>'
+        '<div style="font:10px/1.4 Arial,sans-serif;letter-spacing:.12em;text-transform:uppercase;'
+        'color:#64748b;margin-bottom:20px">Lead Scoring · Contatech</div>'
+        f'<p style="font:600 17px Arial,sans-serif;color:#b91c1c;margin:0 0 14px">{_esc(titulo)}</p>'
+        + lineas +
+        '<p style="font:12px/1.6 Arial,sans-serif;color:#94a3b8;border-top:1px solid #e2e8f0;'
+        f'padding-top:12px;margin-top:24px">{_esc(pie)}</p>'
+        '</div>'
+    )
+    return f"MAU · {titulo}", texto, html
+
+
+async def _reservar_sistema(conn: asyncpg.Connection, tipo: str, clave: str) -> bool:
+    """True si este aviso concreto no se habia mandado ya. Reservar antes de enviar evita
+    que dos ejecuciones solapadas manden el mismo correo dos veces."""
+    return bool(await conn.fetchval(
+        "INSERT INTO sistema_alertas (tipo, clave) VALUES ($1, $2) "
+        "ON CONFLICT DO NOTHING RETURNING tipo", tipo, clave))
+
+
+async def revisar_fuente(conn: asyncpg.Connection) -> dict:
+    """Avisa cuando dejan de entrar leads, o cuando la pasada que los trae no pudo correr.
+
+    Es el unico aviso que mira el SISTEMA y no los leads. Todos los demas se disparan por algo
+    que le pasa a una fila, y ahi esta el punto ciego: cuando la fuente se calla no aparece
+    ninguna fila nueva de la que sospechar, asi que no salta nada y el dashboard sigue
+    enseñando la foto de ayer con toda normalidad. Paso de verdad — tres dias congelado, y se
+    descubrio mirando a mano, no porque el sistema lo dijera.
+
+    La clave del antiduplicado lleva dentro los dias de silencio, asi que sale un correo por
+    cada dia que la averia sigue viva. Es deliberado y no contradice la regla de no acostumbrar
+    a nadie a ignorar avisos: esto no es un recordatorio, es una averia que cuesta ~7 leads al
+    dia y que solo para cuando alguien la arregla.
+    """
+    f = await estado_fuente(conn)
+    r = {**f, "tipo": None, "enviada": False,
+         "destinos": len(ALERTAS_TECNICO_CORREOS), "resumen": ""}
+
+    if not f["conocido"]:
+        r["resumen"] = "aún no hay ninguna pasada registrada"
+        return r
+
+    if f["fallo"]:
+        tipo, clave = "pasada_fallida", f["ultima_pasada"][:10]
+    elif f["muda"]:
+        tipo = "fuente_muda"
+        clave = f"{f['ultima_actividad'] or 'sin-actividad'}/{int((f['horas_sin_actividad'] or 0) // 24)}"
+    else:
+        r["resumen"] = (f"al día: última conversación {_hace(f['horas_sin_actividad'])}, "
+                        f"{f['nuevos']} nuevos en la última pasada")
+        return r
+
+    r["tipo"] = tipo
+    if not (correo.configurado() and ALERTAS_TECNICO_CORREOS):
+        # Sin canal no se reserva nada, para que el aviso siga pendiente el dia que si lo haya.
+        falta = "ALERTAS_TECNICO_CORREOS" if correo.configurado() else "MAIL_* y ALERTAS_TECNICO_CORREOS"
+        r["resumen"] = f"{TIPOS_SISTEMA[tipo]} — SIN AVISAR A NADIE: falta {falta}"
+        return r
+
+    if not await _reservar_sistema(conn, tipo, clave):
+        r["resumen"] = f"{TIPOS_SISTEMA[tipo]} — ya avisado hoy"
+        return r
+
+    asunto, texto, html = _mensaje_fuente(tipo, f)
+    try:
+        await asyncio.to_thread(correo.enviar, ALERTAS_TECNICO_CORREOS, asunto, texto, html)
+    except Exception as e:  # noqa: BLE001 — SMTP caido, red...
+        # Se devuelve la reserva: perder el aviso de que no entran leads por un fallo puntual
+        # del correo es justo lo que no puede pasar. Manana se reintenta.
+        await conn.execute("DELETE FROM sistema_alertas WHERE tipo=$1 AND clave=$2", tipo, clave)
+        r["resumen"] = f"{TIPOS_SISTEMA[tipo]} — el correo falló: {e}"
+        return r
+
+    r["enviada"] = True
+    r["resumen"] = f"{TIPOS_SISTEMA[tipo]} — avisado a {', '.join(ALERTAS_TECNICO_CORREOS)}"
     return r

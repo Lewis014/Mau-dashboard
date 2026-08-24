@@ -128,6 +128,14 @@
     .score-fill { height: 100%; background: var(--brand-accent); border-radius: 3px; }
     .score-text { font-size: 12px; color: var(--gray-500); }
 
+    /* ── Frescura de los datos ── */
+    .frescura { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; font-size: 13px; color: var(--gray-500); }
+    /* Cuando la fuente se calla deja de ser una nota al pie: pasa a ocupar sitio y a tener
+       color, porque el fallo anterior fue justamente que todo se veia normal. */
+    .frescura-mal { border: 1px solid var(--red); background: var(--red-light); color: #7f1d1d; border-radius: 8px; padding: 12px 14px; font-size: 13.5px; line-height: 1.55; }
+    .frescura-mal b { color: #7f1d1d; }
+    .frescura svg { flex-shrink: 0; vertical-align: -2px; margin-right: 6px; }
+
     /* ── Buttons / selects ── */
     .btn-sm { border: 1px solid var(--gray-200); background: white; border-radius: 6px; padding: 5px 12px; font-size: 13px; cursor: pointer; color: var(--gray-600); }
     .btn-sm:hover { background: var(--gray-50); }
@@ -366,6 +374,9 @@
         </select>
         <button class="btn-sm" onclick="limpiarRango()">Limpiar</button>
       </div>
+      <!-- Frescura ANTES de los KPIs, no como una tarjeta mas entre ellos: cuando la entrada
+           de leads se paro tres dias, el total se veia perfectamente normal y nadie lo noto. -->
+      <div id="frescura"></div>
       <div class="kpi-grid" id="kpi-grid">
         <div class="empty-box"><span class="spinner"></span>Cargando…</div>
       </div>
@@ -801,6 +812,7 @@ async function loadDashboard() {
   const s = await api('GET', '/stats?' + aplicarRango(new URLSearchParams()));
   if (!s) return;
   poblarAnios(s.primer_lead);
+  renderFrescura(s.fuente);
 
   const prob = s.prob_promedio != null ? Math.round(s.prob_promedio * 100) + '<small>%</small>' : '—';
   document.getElementById('kpi-grid').innerHTML = `
@@ -889,6 +901,98 @@ function goLeadsSeguimiento(valor) {
   document.getElementById('f-seg').value = valor;
   page = 0;
   nav('leads');
+}
+
+/* ══════════ Frescura de los datos ══════════ */
+
+/* Cuánto hace, en palabras. «20 ago 2026» no dice si eso es normal; «hace 3 días», sí. */
+function hace(horas) {
+  if (horas == null) return 'nunca';
+  if (horas < 1) return 'hace menos de una hora';
+  if (horas < 48) { const h = Math.round(horas); return `hace ${h} hora${h !== 1 ? 's' : ''}`; }
+  return `hace ${Math.floor(horas / 24)} días`;
+}
+
+const SVG_FRESCURA_MAL = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5"/><path d="M12 16.5h.01"/></svg>';
+const SVG_FRESCURA_OK = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
+
+function botonTraer() {
+  return '<button class="btn-sm" id="traer-btn" style="white-space:nowrap" onclick="traerLeads()">Traer leads nuevos</button>';
+}
+
+/* Se pinta encima de los KPIs y con color propio cuando algo va mal. El fallo que motivó
+   esto fue que la entrada de leads estuvo tres días parada y el dashboard se veía idéntico
+   a un día normal: el total seguía ahí, tan tranquilo. */
+function renderFrescura(f) {
+  const el = document.getElementById('frescura');
+  if (!f) { el.innerHTML = ''; el.className = ''; return; }
+
+  if (!f.conocido) {
+    el.className = 'frescura';
+    el.innerHTML = '<span>Todavía no se ha revisado la fuente. La primera pasada corre sola a '
+      + 'la hora programada; también puedes lanzarla ahora.</span>' + botonTraer();
+  } else if (f.fallo) {
+    el.className = 'frescura frescura-mal';
+    el.innerHTML = `<span>${SVG_FRESCURA_MAL}<b>La última actualización falló</b>
+      (${esc(fmtFechaHora(f.ultima_pasada))}). Motivo: ${esc(f.fallo)}.
+      Lo que ves es lo último que sí se pudo traer.</span>` + botonTraer();
+  } else if (f.muda) {
+    el.className = 'frescura frescura-mal';
+    const desde = f.ultima_actividad
+      ? `La última conversación recibida es del <b>${esc(fmtFechaHora(f.ultima_actividad))}</b> (${hace(f.horas_sin_actividad)}).`
+      : 'No se encontró ninguna conversación en el inbox.';
+    el.innerHTML = `<span>${SVG_FRESCURA_MAL}<b>La entrada de leads está detenida.</b> ${desde}
+      Lo que ves aquí está congelado desde entonces: no es que no haya novedades, es que no
+      están llegando.</span>` + botonTraer();
+  } else {
+    el.className = 'frescura';
+    el.innerHTML = `<span>${SVG_FRESCURA_OK}Datos al día · última conversación
+      ${hace(f.horas_sin_actividad)} · revisado ${esc(fmtFechaHora(f.ultima_pasada))}</span>`
+      + botonTraer();
+  }
+}
+
+/* Lanza la pasada y sondea hasta que acabe. El POST no espera el resultado: el barrido tarda
+   minutos (cientos de conversaciones y una llamada a Claude por cada una que cambió), así que
+   el servidor responde al instante y el avance se consulta aparte. */
+let traerTimer = null;
+
+async function traerLeads() {
+  const btn = document.getElementById('traer-btn');
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  btn.textContent = 'Trayendo…';
+
+  const r = await api('POST', '/backfill');
+  if (!r || !r.corriendo) {
+    alert('No se pudo iniciar: ' + ((r && r.detail) || 'error de conexión'));
+    btn.disabled = false; btn.textContent = 'Traer leads nuevos';
+    return;
+  }
+
+  const inicio = Date.now();
+  clearInterval(traerTimer);
+  traerTimer = setInterval(async () => {
+    const e = await api('GET', '/backfill/estado');
+    if (!e || e.corriendo) {
+      // El botón se repinta si alguien recarga el dashboard mientras tanto; comprobarlo
+      // evita escribir sobre un nodo que ya no está en la página.
+      const min = Math.floor((Date.now() - inicio) / 60000);
+      if (btn.isConnected) btn.textContent = min ? `Trayendo… (${min} min)` : 'Trayendo…';
+      return;
+    }
+    clearInterval(traerTimer);
+    traerTimer = null;
+    if (e.estado === 'error') {
+      alert('La actualización falló:\n\n' + (e.detalle || 'motivo desconocido'));
+    } else if (e.resultado) {
+      const x = e.resultado;
+      alert(`Actualización lista.\n\n${x.nuevos} lead(s) nuevos o con la conversación cambiada.\n`
+          + `${x.sin_cambios} sin cambios y ${x.descartados} descartados por no llegar a ser una conversación.\n`
+          + `Se revisaron ${x.conversaciones} conversaciones del inbox.`);
+    }
+    loadDashboard();   // repinta los KPIs y la banda con lo que se acaba de traer
+  }, 5000);
 }
 
 /* ══════════ Alertas automáticas ══════════ */
