@@ -1,10 +1,13 @@
 import os
+import io
+import csv
 import json
-import asyncio
-import base64
-import hashlib
-import hmac
 import time
+import hmac
+import codecs
+import base64
+import asyncio
+import hashlib
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
@@ -12,7 +15,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import asyncpg
 from fastapi import FastAPI, HTTPException, Depends, Query, Security
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
@@ -604,6 +607,51 @@ async def lifespan(app: FastAPI):
         )
         """
     )
+    # Hitos del embudo, uno por lead y estado, CON SU FECHA. Las etiquetas dicen el estado
+    # actual del lead pero no cuando llego a el, y el Scoreboard semanal pregunta justo lo
+    # contrario: cuantas demos se agendaron ESTA semana. Filtrar por captured_at no lo
+    # responde — el 97% de los leads etiquetados se etiquetaron en una semana distinta a la
+    # de su captura, asi que los dos numeros no se parecen.
+    #
+    # UNIQUE(lead_id, evento): un lead no puede tener dos veces «demo agendada», igual que no
+    # puede llevar la etiqueta dos veces. Si algun dia hay que contar dos demos al mismo lead,
+    # esta es la restriccion que habra que levantar.
+    await pool.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lead_eventos (
+          id        bigserial PRIMARY KEY,
+          lead_id   varchar(255) NOT NULL REFERENCES leads_dataset(lead_id) ON DELETE CASCADE,
+          evento    text NOT NULL,
+          fecha     date NOT NULL,
+          autor     text NOT NULL,
+          creado_at timestamptz NOT NULL DEFAULT now(),
+          UNIQUE (lead_id, evento)
+        )
+        """
+    )
+    # El Scoreboard agrupa por evento dentro de un rango de fechas: este indice es su consulta.
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_lead_eventos_semana ON lead_eventos (evento, fecha)"
+    )
+    # Siembra los eventos de las etiquetas que ya estaban puestas. Sin esto el Scoreboard
+    # arrancaria vacio y las semanas pasadas dirian cero, que se lee como «no hubo demos» en
+    # vez de «no se registraba». La fecha es la mejor disponible: el ultimo cambio manual
+    # (outcome_date) y la captura como respaldo. autor='migracion' las deja identificables,
+    # porque son aproximadas y quien lea el Scoreboard tiene derecho a saberlo.
+    await pool.execute(
+        """
+        INSERT INTO lead_eventos (lead_id, evento, fecha, autor)
+        SELECT l.lead_id, t,
+               (COALESCE(l.outcome_date, l.captured_at) AT TIME ZONE $2::text)::date,
+               'migracion'
+          FROM leads_dataset l, unnest(l.outcome_tags) AS t
+         WHERE t = ANY($1::text[])
+           AND COALESCE(l.outcome_date, l.captured_at) IS NOT NULL
+        ON CONFLICT (lead_id, evento) DO NOTHING
+        """,
+        TAG_GROUPS["estado"], LOCAL_TZ,
+    )
+
     # Migra el outcome unico de cada lead a su etiqueta equivalente. Es idempotente: solo
     # toca filas todavia sin etiquetar, y vaciar las etiquetas desde el dashboard devuelve
     # outcome a 'nuevo', asi que un borrado deliberado no revive en el siguiente arranque.
@@ -654,6 +702,22 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None)
 
 
+@app.middleware("http")
+async def no_indexar(request, call_next):
+    """Marca cada respuesta como no indexable.
+
+    El meta del HTML solo protege al HTML; esta cabecera tambien cubre las respuestas
+    JSON de /leads y compania, que un buscador puede alcanzar igual de bien. Y a
+    diferencia de robots.txt, que solo pide no rastrear, noindex pide no publicar:
+    una URL enlazada desde fuera puede acabar en el indice sin haberse rastreado nunca.
+
+    Nada de esto sustituye a poner autenticacion delante del HTML; son capas distintas.
+    """
+    respuesta = await call_next(request)
+    respuesta.headers["X-Robots-Tag"] = "noindex, nofollow"
+    return respuesta
+
+
 class OutcomeBody(BaseModel):
     # El dashboard manda siempre el conjunto completo (reemplazo, no incremento).
     # outcome es el formato legado de un solo valor; se acepta para no romper a n8n/scripts.
@@ -670,6 +734,11 @@ class NotaBody(BaseModel):
 class SiguientePasoBody(BaseModel):
     texto: Optional[str] = None
     fecha: Optional[str] = None   # YYYY-MM-DD
+
+
+class EventoBody(BaseModel):
+    # Solo la fecha: el hito existe porque existe la etiqueta, y el autor sale de la sesion.
+    fecha: str   # YYYY-MM-DD
 
 
 class LoginBody(BaseModel):
@@ -737,6 +806,12 @@ async def health():
 @app.get("/")
 async def root():
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+
+
+@app.get("/robots.txt")
+async def robots():
+    """Le pide a los rastreadores que no entren a ninguna ruta."""
+    return PlainTextResponse("User-agent: *\nDisallow: /\n")
 
 
 ORDER_BY = {
@@ -843,7 +918,13 @@ async def stats(
           COUNT(*)                                            AS total,
           COUNT(*) FILTER (WHERE qualified)                   AS calificados,
           COUNT(*) FILTER (WHERE outcome_tags @> ARRAY['cliente'])  AS clientes,
-          COUNT(*) FILTER (WHERE cardinality(outcome_tags) = 0)     AS sin_etiquetas,
+          -- Pendientes de etiquetar: sin etiquetas Y con conversacion. El transcript no es un
+          -- adorno del filtro, es la condicion para poder etiquetar — sin conversacion que
+          -- leer no hay nada que decidir, y la cola de etiquetado ya los excluye. Contarlos
+          -- aqui hacia que la tarjeta dijera 399 y la cola mostrara 186: 213 de diferencia,
+          -- justo los leads sin transcript.
+          COUNT(*) FILTER (WHERE cardinality(outcome_tags) = 0
+                             AND transcript IS NOT NULL)            AS sin_etiquetas,
           AVG(conversion_prob)                                AS prob_promedio,
           COUNT(*) FILTER (WHERE conversion_prob IS NOT NULL) AS con_score,
           COUNT(*) FILTER (WHERE transcript IS NOT NULL)      AS con_transcript,
@@ -855,7 +936,8 @@ async def stats(
         hoy_local(),
     )
     # unnest descarta las filas con array vacio: eso es correcto para contar etiquetas
-    # (el pendiente de etiquetar se cuenta aparte, en sin_etiquetas).
+    # (el pendiente de etiquetar se cuenta aparte, en sin_etiquetas, que ademas solo
+    # cuenta los que tienen conversacion — los unicos que se pueden etiquetar).
     por_tag = await pool.fetch(
         f"SELECT t AS tag, COUNT(*) AS n FROM leads_dataset, unnest(outcome_tags) AS t {where} GROUP BY t",
         *args,
@@ -892,24 +974,68 @@ async def stats(
     }
 
 
-@app.get("/api/leads")
-async def list_leads(
-    q: Optional[str] = Query(None, description="Busqueda libre sobre los datos de identidad del lead"),
-    tags: Optional[str] = Query(None, description="Etiquetas separadas por coma; el lead debe tenerlas todas"),
-    sin_etiquetas: Optional[str] = Query(None),
-    plan_estado: Optional[str] = Query(None),
-    outcome: Optional[str] = Query(None),
-    qualified: Optional[str] = Query(None),
-    has_transcript: Optional[str] = Query(None),
-    seguimiento: Optional[str] = Query(None, description="vencido | hoy | semana | sin_definir"),
+@app.get("/api/scoreboard")
+async def scoreboard(
     desde: Optional[str] = Query(None),
     hasta: Optional[str] = Query(None),
-    sort: str = Query("recientes"),
-    limit: int = Query(50, le=200),
-    offset: int = Query(0, ge=0),
     _=Depends(check_auth),
 ):
-    pool = db.get_pool()
+    """Cuantos hitos del embudo OCURRIERON en el rango. No es lo mismo que /api/stats.
+
+    /api/stats responde «de los leads que ENTRARON en este periodo, cuantos son X», y filtra
+    por captured_at. Esto responde «cuantas demos se agendaron ESTA semana», sin importar
+    cuando llego el lead, y filtra por la fecha del hito. Son dos preguntas distintas, y de ahi
+    que sean dos endpoints: el 97% de los leads etiquetados se etiquetaron en una semana
+    distinta a la de su captura, asi que confundirlas da numeros que no se parecen.
+
+    `aproximados` cuenta los hitos que vienen de la migracion, cuya fecha es una estimacion
+    (el ultimo cambio manual, o la captura). Se devuelve para que la pantalla pueda advertirlo
+    en vez de presentar como exacto un numero que no lo es.
+    """
+    cond, args = [], []
+    for raw, op in ((desde, ">="), (hasta, "<=")):
+        if raw:
+            args.append(_dia_iso(raw))
+            cond.append(f"fecha {op} ${len(args)}")
+    where = ("WHERE " + " AND ".join(cond)) if cond else ""
+
+    filas = await db.get_pool().fetch(
+        f"""SELECT evento, COUNT(*) AS n,
+                   COUNT(*) FILTER (WHERE autor = 'migracion') AS aprox
+              FROM lead_eventos {where} GROUP BY evento""",
+        *args,
+    )
+
+    # Los leads nuevos SI se cuentan por fecha de captura: ese es su hito, el momento en que
+    # entraron. Es la unica fila del Scoreboard que no sale de lead_eventos.
+    cond_cap, args_cap = ["is_test = false"], []
+    _rango_captura(desde, hasta, cond_cap, args_cap)
+    nuevos = await db.get_pool().fetchval(
+        "SELECT COUNT(*) FROM leads_dataset WHERE " + " AND ".join(cond_cap), *args_cap
+    )
+
+    return {
+        "desde": desde, "hasta": hasta,
+        "leads_nuevos": nuevos,
+        "por_evento": {r["evento"]: r["n"] for r in filas},
+        "aproximados": {r["evento"]: r["aprox"] for r in filas if r["aprox"]},
+        "orden": list(TAG_GROUPS["estado"]),
+    }
+
+
+def _filtros_leads(
+    q: Optional[str], tags: Optional[str], sin_etiquetas: Optional[str],
+    plan_estado: Optional[str], outcome: Optional[str], qualified: Optional[str],
+    has_transcript: Optional[str], seguimiento: Optional[str],
+    desde: Optional[str], hasta: Optional[str],
+) -> tuple[str, list]:
+    """Traduce los filtros de la barra a un WHERE con sus argumentos.
+
+    Vive aparte porque lo usan la tabla y la exportacion a CSV, y el CSV solo sirve si
+    dice exactamente lo mismo que la pantalla. Si cada uno armara su propio WHERE, el dia
+    que se toque un filtro se tocaria uno solo y nadie lo notaria: el CSV seguiria
+    descargandose, con otras filas.
+    """
     # is_test se excluye igual que en /api/stats: con el rango de fechas compartido entre
     # ambas vistas, los conteos del dashboard y de la tabla tienen que cuadrar.
     conditions: list[str] = ["is_test = false"]
@@ -941,7 +1067,29 @@ async def list_leads(
     if not (q or "").strip():
         _rango_captura(desde, hasta, conditions, args)
 
-    where = "WHERE " + " AND ".join(conditions)
+    return "WHERE " + " AND ".join(conditions), args
+
+
+@app.get("/api/leads")
+async def list_leads(
+    q: Optional[str] = Query(None, description="Busqueda libre sobre los datos de identidad del lead"),
+    tags: Optional[str] = Query(None, description="Etiquetas separadas por coma; el lead debe tenerlas todas"),
+    sin_etiquetas: Optional[str] = Query(None),
+    plan_estado: Optional[str] = Query(None),
+    outcome: Optional[str] = Query(None),
+    qualified: Optional[str] = Query(None),
+    has_transcript: Optional[str] = Query(None),
+    seguimiento: Optional[str] = Query(None, description="vencido | hoy | semana | sin_definir"),
+    desde: Optional[str] = Query(None),
+    hasta: Optional[str] = Query(None),
+    sort: str = Query("recientes"),
+    limit: int = Query(50, le=200),
+    offset: int = Query(0, ge=0),
+    _=Depends(check_auth),
+):
+    pool = db.get_pool()
+    where, args = _filtros_leads(q, tags, sin_etiquetas, plan_estado, outcome,
+                                 qualified, has_transcript, seguimiento, desde, hasta)
     order_by = ORDER_BY.get(sort, ORDER_BY["recientes"])
 
     total = await pool.fetchval(f"SELECT COUNT(*) FROM leads_dataset {where}", *args)
@@ -964,6 +1112,138 @@ async def list_leads(
     return {"total": total, "items": items}
 
 
+# Columnas del CSV: (cabecera, columna SQL, formateador). El orden es el de la tabla en
+# pantalla, y detras van los campos que la tabla no muestra pero que hacen falta para
+# cruzar con HubSpot o Meta Ads (RUC, industria, canal, fechas del plan).
+EXPORT_COLUMNAS: list[tuple[str, str, str]] = [
+    ("telefono",             "lead_id",              "telefono"),
+    ("nombre",               "contact_name",         "texto"),
+    ("empresa",              "company_name",         "texto"),
+    ("correo",               "email",                "texto"),
+    ("ruc",                  "tax_id",               "texto"),
+    ("industria",            "industry",             "texto"),
+    ("segmento",             "segmento",             "texto"),
+    ("tipo_lead",            "tipo_lead",            "texto"),
+    ("calificado",           "qualified",            "si_no"),
+    ("prob_conversion_pct",  "conversion_prob",      "porcentaje"),
+    ("estado",               "outcome",              "texto"),
+    ("etiquetas",            "outcome_tags",         "lista"),
+    ("plan_estado",          "plan_estado",          "texto"),
+    ("plan_nombre",          "plan_nombre",          "texto"),
+    ("plan_inicia",          "plan_inicia",          "fecha_local"),
+    ("plan_expira",          "plan_expira",          "fecha_local"),
+    ("siguiente_paso",       "siguiente_paso",       "texto"),
+    ("siguiente_paso_fecha", "siguiente_paso_fecha", "fecha"),
+    ("canal",                "canal",                "texto"),
+    ("mensajes",             "message_count",        "texto"),
+    ("fecha_captura",        "captured_at",          "fecha_hora_local"),
+]
+
+
+def _csv_valor(valor, formato: str) -> str:
+    """Un valor de Postgres -> el texto que va en la celda."""
+    if valor is None:
+        return ""
+    if formato == "telefono":
+        # lead_id ES el numero; la tabla lo pinta con "+" y el CSV hace lo mismo para que
+        # un telefono peruano no pierda el prefijo al abrirse en una hoja de calculo.
+        return "+" + str(valor)
+    if formato == "si_no":
+        return "Sí" if valor else "No"
+    if formato == "porcentaje":
+        # Entero, como se lee en pantalla: 0.72 -> 72. Una hoja de calculo lo suma y lo
+        # ordena; "72%" como texto, no.
+        return str(round(float(valor) * 100))
+    if formato == "lista":
+        # "|" y no "," ni ";": ambos son separadores de CSV en algun Excel, y una etiqueta
+        # partida en dos columnas es un error que nadie ve hasta que ya importo los datos.
+        return "|".join(str(v) for v in valor)
+    if formato == "fecha":
+        return valor.isoformat()
+    if formato in ("fecha_local", "fecha_hora_local"):
+        # timestamptz -> hora del negocio. En UTC, un lead de las 20:00 de Lima aparece al
+        # dia siguiente, y al cruzar con Meta Ads las fechas dejan de coincidir.
+        local = valor.astimezone(_tz_local())
+        return local.strftime("%Y-%m-%d" if formato == "fecha_local" else "%Y-%m-%d %H:%M")
+    return str(valor)
+
+
+# Cuantas filas se juntan antes de mandarlas. Suficiente para no soltar un paquete por
+# lead, pequeño para que la descarga empiece de inmediato y no cargue el CSV entero en RAM.
+EXPORT_LOTE = 200
+
+
+# OJO: esta ruta va ANTES de /api/leads/{lead_id}. FastAPI resuelve por orden de registro,
+# asi que si se mueve mas abajo, "export.csv" entraria como un lead_id y devolveria 404.
+@app.get("/api/leads/export.csv")
+async def export_leads_csv(
+    q: Optional[str] = Query(None),
+    tags: Optional[str] = Query(None),
+    sin_etiquetas: Optional[str] = Query(None),
+    plan_estado: Optional[str] = Query(None),
+    outcome: Optional[str] = Query(None),
+    qualified: Optional[str] = Query(None),
+    has_transcript: Optional[str] = Query(None),
+    seguimiento: Optional[str] = Query(None),
+    desde: Optional[str] = Query(None),
+    hasta: Optional[str] = Query(None),
+    sort: str = Query("recientes"),
+    _=Depends(check_auth),
+):
+    """La tabla de leads filtrada, entera, en CSV.
+
+    Sin limit ni offset a proposito: exportar "lo que veo" es el conjunto filtrado
+    completo, no los 50 de la pagina abierta. Un CSV de 50 filas parece correcto y no lo
+    es, que es la peor forma de estar mal.
+
+    Se envia en streaming con un cursor del servidor para que el numero de leads no sea el
+    limite: ni el proceso junta la tabla entera en memoria, ni el navegador espera a que
+    termine para empezar a recibir.
+    """
+    where, args = _filtros_leads(q, tags, sin_etiquetas, plan_estado, outcome,
+                                 qualified, has_transcript, seguimiento, desde, hasta)
+    columnas = ", ".join(col for _, col, _f in EXPORT_COLUMNAS)
+    sql = (f"SELECT {columnas} FROM leads_dataset {where} "
+           f"ORDER BY {ORDER_BY.get(sort, ORDER_BY['recientes'])}")
+
+    async def generar():
+        buf = io.StringIO()
+        escritor = csv.writer(buf)   # el lineterminator por defecto ya es CRLF
+
+        def vaciar() -> bytes:
+            datos = buf.getvalue().encode("utf-8")
+            buf.seek(0)
+            buf.truncate(0)
+            return datos
+
+        # BOM: sin el, Excel en Windows abre el CSV como ANSI y "Compañía" sale rota.
+        # Los importadores de HubSpot y Meta lo toleran; Excel sin BOM, no.
+        yield codecs.BOM_UTF8
+        escritor.writerow([cab for cab, _c, _f in EXPORT_COLUMNAS])
+        yield vaciar()
+
+        async with db.get_pool().acquire() as con:
+            async with con.transaction():   # el cursor de asyncpg exige transaccion
+                pendientes = 0
+                async for fila in con.cursor(sql, *args):
+                    escritor.writerow([
+                        _csv_valor(fila[col], fmt) for _cab, col, fmt in EXPORT_COLUMNAS
+                    ])
+                    pendientes += 1
+                    if pendientes >= EXPORT_LOTE:
+                        pendientes = 0
+                        yield vaciar()
+                if pendientes:
+                    yield vaciar()
+
+    nombre = f"leads-{hoy_local().isoformat()}.csv"
+    return StreamingResponse(
+        generar(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{nombre}"'},
+    )
+
+
 @app.get("/api/leads/{lead_id}")
 async def get_lead(lead_id: str, _=Depends(check_auth)):
     pool = db.get_pool()
@@ -973,8 +1253,41 @@ async def get_lead(lead_id: str, _=Depends(check_auth)):
     return db.row_to_dict(row)
 
 
+# Solo las etiquetas de ESTADO son hitos del embudo. El responsable y el canal describen al
+# lead, no algo que le haya pasado un dia concreto, asi que no generan evento.
+EVENTOS_EMBUDO = frozenset(TAG_GROUPS["estado"])
+
+
+async def sincronizar_eventos(conn: asyncpg.Connection, lead_id: str,
+                              tags: list[str], autor: str) -> None:
+    """Refleja el cambio de etiquetas en lead_eventos: un hito fechado por cada estado.
+
+    La fecha se pone en HOY, que es lo correcto en el uso normal: se marca «demo agendada» el
+    dia que se agenda y «demo realizada» el dia que ocurre, asi que cada numero cae en su
+    semana. Para el etiquetado retroactivo se corrige despues (PATCH .../eventos/{evento}).
+
+    ON CONFLICT DO NOTHING es lo que hace que volver a guardar el mismo conjunto de etiquetas
+    no reinicie las fechas: sin eso, tocar cualquier etiqueta moveria todas las demas a hoy y
+    el Scoreboard de la semana pasada cambiaria solo.
+
+    Quitar una etiqueta borra su evento, a proposito: si se marco por error, el Scoreboard
+    tiene que dejar de contarlo. Un numero que no se puede corregir no se usa.
+    """
+    quedan = [t for t in tags if t in EVENTOS_EMBUDO]
+    await conn.execute(
+        "DELETE FROM lead_eventos WHERE lead_id = $1 AND NOT (evento = ANY($2::text[]))",
+        lead_id, quedan,
+    )
+    if quedan:
+        await conn.executemany(
+            "INSERT INTO lead_eventos (lead_id, evento, fecha, autor) VALUES ($1, $2, $3, $4) "
+            "ON CONFLICT (lead_id, evento) DO NOTHING",
+            [(lead_id, e, hoy_local(), autor) for e in quedan],
+        )
+
+
 @app.patch("/api/leads/{lead_id}/outcome")
-async def update_outcome(lead_id: str, body: OutcomeBody, _=Depends(check_auth)):
+async def update_outcome(lead_id: str, body: OutcomeBody, usuario: str = Depends(check_auth)):
     """Reemplaza el conjunto de etiquetas del lead y recalcula su estado principal."""
     if body.tags is not None:
         crudas = body.tags
@@ -984,16 +1297,21 @@ async def update_outcome(lead_id: str, body: OutcomeBody, _=Depends(check_auth))
         crudas = [OUTCOME_LEGACY.get(body.outcome, body.outcome)]
     tags = normalize_tags(crudas)
 
+    # Las etiquetas y sus eventos van en la misma transaccion: si divergieran, el Scoreboard
+    # contaria una demo que el lead ya no tiene, o al contrario, y no habria forma de saberlo.
     pool = db.get_pool()
-    result = await pool.execute(
-        "UPDATE leads_dataset SET outcome_tags=$1, outcome=$2, outcome_date=NOW(), "
-        "outcome_source='manual', updated_at=NOW() WHERE lead_id=$3",
-        tags,
-        primary_outcome(tags),
-        lead_id,
-    )
-    if result == "UPDATE 0":
-        raise HTTPException(status_code=404, detail="Lead not found")
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            result = await conn.execute(
+                "UPDATE leads_dataset SET outcome_tags=$1, outcome=$2, outcome_date=NOW(), "
+                "outcome_source='manual', updated_at=NOW() WHERE lead_id=$3",
+                tags,
+                primary_outcome(tags),
+                lead_id,
+            )
+            if result == "UPDATE 0":
+                raise HTTPException(status_code=404, detail="Lead not found")
+            await sincronizar_eventos(conn, lead_id, tags, usuario)
     return {"ok": True, "tags": tags, "outcome": primary_outcome(tags)}
 
 
@@ -1025,6 +1343,38 @@ async def add_nota(lead_id: str, body: NotaBody, usuario: str = Depends(check_au
     except asyncpg.ForeignKeyViolationError:
         raise HTTPException(status_code=404, detail="Lead not found")
     return db.row_to_dict(row)
+
+
+@app.get("/api/leads/{lead_id}/eventos")
+async def listar_eventos(lead_id: str, _=Depends(check_auth)):
+    """Hitos del embudo de este lead con su fecha. Es el detalle de lo que suma el Scoreboard."""
+    rows = await db.get_pool().fetch(
+        "SELECT evento, fecha, autor, creado_at FROM lead_eventos WHERE lead_id = $1 "
+        "ORDER BY fecha, evento",
+        lead_id,
+    )
+    return {"eventos": [db.row_to_dict(r) for r in rows]}
+
+
+@app.patch("/api/leads/{lead_id}/eventos/{evento}")
+async def corregir_evento(lead_id: str, evento: str, body: EventoBody,
+                          usuario: str = Depends(check_auth)):
+    """Corrige la FECHA de un hito ya registrado, moviendolo de semana.
+
+    Existe porque el hito se fecha en hoy al marcar la etiqueta, y eso falla en el caso
+    retroactivo: quien el viernes etiqueta las demos de toda la semana las mandaria todas al
+    viernes y descuadraria el Scoreboard. Tambien sirve para la demo que se agenda hoy y se
+    realiza la semana que viene.
+    """
+    if evento not in EVENTOS_EMBUDO:
+        raise HTTPException(status_code=400, detail=f"'{evento}' no es un hito del embudo")
+    result = await db.get_pool().execute(
+        "UPDATE lead_eventos SET fecha = $1, autor = $2 WHERE lead_id = $3 AND evento = $4",
+        _dia_iso(body.fecha), usuario, lead_id, evento,
+    )
+    if result == "UPDATE 0":
+        raise HTTPException(status_code=404, detail="Ese lead no tiene ese hito registrado")
+    return {"ok": True, "evento": evento, "fecha": body.fecha}
 
 
 @app.patch("/api/leads/{lead_id}/siguiente-paso")

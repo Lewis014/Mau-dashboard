@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
   <title>MAU — Leads Dashboard</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -127,6 +128,11 @@
     .score-bar { width: 44px; height: 5px; background: var(--gray-200); border-radius: 3px; overflow: hidden; flex-shrink: 0; }
     .score-fill { height: 100%; background: var(--brand-accent); border-radius: 3px; }
     .score-text { font-size: 12px; color: var(--gray-500); }
+
+    /* ── Fechas del embudo (detalle del lead) ── */
+    .hito-list { display: flex; flex-direction: column; gap: 8px; }
+    .hito { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .hito input[type=date] { border: 1px solid var(--gray-200); border-radius: 6px; padding: 3px 8px; font-size: 12.5px; color: var(--gray-800); }
 
     /* ── Frescura de los datos ── */
     .frescura { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; font-size: 13px; color: var(--gray-500); }
@@ -338,6 +344,7 @@
       <div class="nav-item" data-view="etiquetado" onclick="nav('etiquetado')">
         Etiquetado <span class="nav-badge" id="tag-badge" style="display:none"></span>
       </div>
+      <div class="nav-item" data-view="scoreboard" onclick="nav('scoreboard')">Scoreboard</div>
     </div>
   </aside>
 
@@ -413,6 +420,8 @@
         <!-- Rango de fechas: los controles viven en el dashboard; aqui solo se refleja. -->
         <span class="badge badge-blue range-chip" id="range-chip" style="display:none"></span>
         <span class="count" id="count-badge"></span>
+        <button class="btn-sm" id="export-btn" onclick="exportarCSV(this)"
+                title="Descarga los leads que cumplen los filtros de arriba, no solo esta página">Exportar CSV</button>
       </div>
       <div class="card">
         <table>
@@ -449,11 +458,31 @@
     <!-- ══ Etiquetado ══ -->
     <section id="view-etiquetado" style="display:none">
       <div class="page-title">Etiquetado</div>
-      <div class="page-sub">Leads con conversación pendientes de etiquetar (outcome = nuevo). Lee el transcript y asigna el resultado real.</div>
+      <div class="page-sub">Leads con conversación a los que todavía no se les ha puesto ninguna etiqueta. Lee el transcript y asigna el resultado real.</div>
+      <!-- Esta vista también obedece al rango de fechas del dashboard, así que necesita
+           decirlo: una cola encogida sin explicación se lee como «ya no queda nada». -->
+      <div class="toolbar">
+        <span class="badge badge-blue range-chip" id="range-chip-tag" style="display:none"></span>
+        <span class="count" id="tag-count"></span>
+      </div>
       <div class="tag-grid">
         <div class="tag-list" id="tag-list"><div class="empty-box"><span class="spinner"></span>Cargando…</div></div>
         <div class="panel" id="tag-panel"><div class="empty-box">Selecciona un lead de la lista para ver su conversación.</div></div>
       </div>
+    </section>
+
+    <!-- La unica pantalla que cuenta EVENTOS y no leads: cada fila es «cuantas veces paso
+         esto en la semana», fechado por el hito, no por cuando entro el lead. -->
+    <section id="view-scoreboard" style="display:none">
+      <div class="page-title">Scoreboard</div>
+      <div class="page-sub">Qué pasó en la semana. Se cuenta por la fecha de cada hito, no por cuándo entró el lead.</div>
+      <div class="toolbar">
+        <button class="btn-sm" onclick="ponerSemana(0)">Esta semana</button>
+        <button class="btn-sm" onclick="ponerSemana(-1)">Semana pasada</button>
+        <span class="badge badge-blue range-chip" id="range-chip-sb" style="display:none"></span>
+        <button class="btn-sm" style="margin-left:auto" onclick="copiarScoreboard()">Copiar</button>
+      </div>
+      <div id="sb-body"><div class="empty-box"><span class="spinner"></span>Cargando…</div></div>
     </section>
   </main>
 </div>
@@ -733,6 +762,17 @@ async function doLogin(e) {
   }
 }
 
+/* Cierra la sesion y vuelve a pedir la clave. Aparte de api() porque la exportacion a
+   CSV no pasa por ahi (descarga un fichero, no JSON) y un 401 tiene que echar igual. */
+function sesionExpirada() {
+  localStorage.removeItem('mau_tk');
+  const err = document.getElementById('auth-err');
+  err.textContent = 'Tu sesión expiró. Vuelve a iniciar sesión.';
+  err.style.display = 'block';
+  document.getElementById('auth-overlay').classList.add('open');
+  renderUsuario();
+}
+
 async function api(method, path, body) {
   const res = await fetch('/api' + path, {
     method,
@@ -742,12 +782,7 @@ async function api(method, path, body) {
   if (res.status === 401 && path !== '/password') {
     // /password se excluye: ahi un 401 significa «la contraseña actual no es correcta»,
     // no que la sesion caducara. Cerrarla seria expulsar a alguien por una errata.
-    localStorage.removeItem('mau_tk');
-    const err = document.getElementById('auth-err');
-    err.textContent = 'Tu sesión expiró. Vuelve a iniciar sesión.';
-    err.style.display = 'block';
-    document.getElementById('auth-overlay').classList.add('open');
-    renderUsuario();
+    sesionExpirada();
     return null;
   }
   return res.json();
@@ -779,7 +814,7 @@ function diasDesde(iso) {
 }
 
 /* ══════════ Router ══════════ */
-const VIEWS = ['dashboard', 'leads', 'detail', 'etiquetado'];
+const VIEWS = ['dashboard', 'leads', 'detail', 'etiquetado', 'scoreboard'];
 
 function nav(view, param) {
   location.hash = param ? `#${view}/${param}` : `#${view}`;
@@ -802,6 +837,7 @@ function route() {
   if (v === 'leads') loadLeads();
   if (v === 'detail') loadDetail(param);
   if (v === 'etiquetado') loadEtiquetado();
+  if (v === 'scoreboard') loadScoreboard();
   refreshTagBadge();
   renderCampana();   // usa la cache: no reevalua en cada cambio de vista
 }
@@ -1229,7 +1265,14 @@ function limpiarRango() {
 
 function recargarPorRango() {
   page = 0;
-  if (vistaActual() === 'leads') loadLeads(); else loadDashboard();
+  // La cola de etiquetado tambien obedece al rango, y su chip lleva la ✕ que llama a
+  // limpiarRango(): sin esta rama, quitar el filtro desde ahi no repintaria la lista.
+  const v = vistaActual();
+  if (v === 'leads') loadLeads();
+  else if (v === 'etiquetado') loadEtiquetado();
+  else if (v === 'scoreboard') loadScoreboard();
+  else loadDashboard();
+  refreshTagBadge();   // la insignia lateral se ve desde cualquier vista
 }
 
 /* ══════════ Buscador (header) ══════════ */
@@ -1254,31 +1297,40 @@ function limpiarBusqueda() {
   onBuscar();
 }
 
-/* Chip de solo lectura en la toolbar de #leads: los controles estan en el dashboard,
-   asi que sin esto la tabla apareceria filtrada sin explicacion. */
-function renderRangeChip() {
-  const chip = document.getElementById('range-chip');
-  const hayRango = dateRange.desde || dateRange.hasta;
+function hayRango() { return !!(dateRange.desde || dateRange.hasta); }
+
+/* Texto del rango activo, para reutilizarlo en el chip y en los mensajes de lista vacia. */
+function textoRango() {
+  const d = dateRange.desde ? fmtDia(dateRange.desde) : '…';
+  const h = dateRange.hasta ? fmtDia(dateRange.hasta) : '…';
+  return `${d} – ${h}`;
+}
+
+/* Chip de solo lectura: los controles del rango viven en el dashboard, asi que sin esto
+   #leads y #etiquetado apareceran filtrados sin explicacion. `elId` distingue los dos.
+   Solo la tabla de leads tiene buscador, y por eso solo ella puede quedar «en pausa». */
+function renderRangeChip(elId = 'range-chip') {
+  const chip = document.getElementById(elId);
+  if (!chip) return;
   // Buscar ignora el rango a proposito (ver list_leads en main.py). Si hay un rango puesto
   // se dice, en vez de dejar un chip azul prometiendo un filtro que no se esta aplicando.
-  if (textoBusqueda()) {
-    chip.style.display = hayRango ? '' : 'none';
+  if (elId === 'range-chip' && textoBusqueda()) {
+    chip.style.display = hayRango() ? '' : 'none';
     chip.className = 'badge badge-gray range-chip';
     chip.innerHTML = 'Filtro de fechas en pausa mientras buscas';
     return;
   }
   chip.className = 'badge badge-blue range-chip';
-  if (!hayRango) { chip.style.display = 'none'; return; }
-  const d = dateRange.desde ? fmtDia(dateRange.desde) : '…';
-  const h = dateRange.hasta ? fmtDia(dateRange.hasta) : '…';
+  if (!hayRango()) { chip.style.display = 'none'; return; }
   chip.style.display = '';
-  chip.innerHTML = `${esc(d)} – ${esc(h)}<button onclick="limpiarRango()" title="Quitar filtro de fechas">✕</button>`;
+  chip.innerHTML = `${esc(textoRango())}<button onclick="limpiarRango()" title="Quitar filtro de fechas">✕</button>`;
 }
 
-/* Sin filtrar por fecha a proposito: es el backlog total pendiente de etiquetar,
-   no debe encogerse por el rango que el usuario tenga puesto en el dashboard. */
+/* Lleva el rango, igual que la tarjeta del dashboard y la propia cola de etiquetado: las
+   tres cuentan lo mismo y tienen que decir el mismo numero. Antes esta pedia /stats sin
+   rango, asi que la insignia se quedaba fija mientras la tarjeta encogia con la fecha. */
 async function refreshTagBadge() {
-  const s = await api('GET', '/stats');
+  const s = await api('GET', '/stats?' + aplicarRango(new URLSearchParams()));
   if (!s) return;
   const n = s.sin_etiquetas || 0;
   const b = document.getElementById('tag-badge');
@@ -1314,11 +1366,14 @@ function tagsFiltro() {
   return TAG_GROUPS.map(g => document.getElementById(`f-tag-${g.key}`).value).filter(Boolean);
 }
 
-async function loadLeads() {
-  const tags     = tagsFiltro();
-  const qual     = document.getElementById('f-qualified').value;
-  const sort     = document.getElementById('f-sort').value;
-  const params   = new URLSearchParams({ limit: PAGE, offset: page * PAGE });
+/* Los filtros que la barra tiene puestos ahora mismo, sin paginacion.
+   Los usan la tabla y la exportacion: el CSV solo sirve si trae lo que se ve en pantalla,
+   y eso deja de ser cierto en cuanto cada uno arma su propia query. */
+function paramsLeads() {
+  const params = new URLSearchParams();
+  const tags = tagsFiltro();
+  const qual = document.getElementById('f-qualified').value;
+  const sort = document.getElementById('f-sort').value;
   const plan = document.getElementById('f-plan').value;
   const seg  = document.getElementById('f-seg').value;
   const q    = textoBusqueda();
@@ -1331,6 +1386,47 @@ async function loadLeads() {
   // Mientras se busca no se manda el rango: el backend tampoco lo aplicaria (buscar un
   // telefono tiene que encontrarlo sea de la fecha que sea).
   if (!q) aplicarRango(params);
+  return params;
+}
+
+async function exportarCSV(btn) {
+  const etiqueta = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Preparando…';
+  try {
+    // No pasa por api(): esa hace res.json() y aqui llega un fichero. Y tampoco puede ser
+    // un <a href> normal, porque una descarga del navegador no lleva la cabecera
+    // Authorization y el endpoint devolveria 401.
+    const res = await fetch('/api/leads/export.csv?' + paramsLeads(),
+                            { headers: { 'Authorization': 'Bearer ' + token() } });
+    if (res.status === 401) { sesionExpirada(); return; }
+    if (!res.ok) throw new Error('el servidor respondió ' + res.status);
+
+    // El nombre lo pone el servidor: lleva la fecha en hora de Lima. Calcularla aqui con
+    // toISOString daria la de UTC, y a partir de las 19:00 el fichero se llamaria mañana.
+    const cd = res.headers.get('Content-Disposition') || '';
+    const encontrado = cd.match(/filename="([^"]+)"/);
+
+    const url = URL.createObjectURL(await res.blob());
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = encontrado ? encontrado[1] : 'leads.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert('No se pudo exportar: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = etiqueta;
+  }
+}
+
+async function loadLeads() {
+  const params = paramsLeads();
+  params.set('limit', PAGE);
+  params.set('offset', page * PAGE);
 
   renderRangeChip();
   const data = await api('GET', '/leads?' + params);
@@ -1589,9 +1685,10 @@ async function loadDetail(leadId) {
   currentLeadId = leadId;
   const el = document.getElementById('detail-content');
   el.innerHTML = '<div class="empty-box"><span class="spinner"></span>Cargando…</div>';
-  const [l, notas] = await Promise.all([
+  const [l, notas, hitos] = await Promise.all([
     api('GET', `/leads/${leadId}`),
     api('GET', `/leads/${leadId}/notas`),
+    api('GET', `/leads/${leadId}/eventos`),
   ]);
   if (!l) return;
   if (l.detail) { el.innerHTML = `<div class="empty-box">${esc(l.detail)}</div>`; return; }
@@ -1629,6 +1726,10 @@ async function loadDetail(leadId) {
         <div class="panel">
           <div class="panel-title">Etiquetas</div>
           ${tagPicker(l.lead_id, tagsOf(l), 'detail')}
+        </div>
+        <div class="panel">
+          <div class="panel-title">Fechas del embudo</div>
+          ${hitosPanel(l.lead_id, hitos)}
         </div>
         <div class="panel">
           <div class="panel-title">Siguiente paso</div>
@@ -1709,6 +1810,41 @@ async function limpiarSiguientePaso(leadId, btn) {
   if (r && r.detail) alert(r.detail);
 }
 
+/* ══════════ Fechas del embudo ══════════ */
+
+/* Cada etiqueta de estado deja un hito fechado, y de ahi salen los numeros del Scoreboard.
+   La fecha se pone sola en el dia que se marca la etiqueta, que es lo correcto casi siempre.
+   Esto existe para el caso que no: quien etiqueta el viernes lo de toda la semana mandaria
+   todo al viernes, y la demo del martes contaria en la semana equivocada. */
+function hitosPanel(leadId, hitos) {
+  const items = (hitos && hitos.eventos) || [];
+  if (!items.length) {
+    return '<span class="cell-muted" style="font-size:13px">Sin hitos todavía. Marca una etiqueta de estado y se fechará sola.</span>';
+  }
+  const id = esc(leadId);
+  return `<div class="hito-list">${items.map(h => `
+      <div class="hito">
+        <span class="badge badge-${TAG_CLASS[h.evento] || 'gray'}">${esc(TAG_LABEL[h.evento] || h.evento)}</span>
+        <input type="date" id="hito-${esc(h.evento)}" value="${esc(h.fecha || '')}"
+               onchange="guardarHito('${id}', '${esc(h.evento)}', this)">
+        ${h.autor === 'migracion'
+          ? '<span class="hint">fecha estimada</span>'
+          : `<span class="hint">${esc(cap(h.autor))}</span>`}
+      </div>`).join('')}</div>
+    <div class="hint" style="margin-top:8px">El Scoreboard cuenta cada hito en la semana de su fecha. Corrígela si la marcaste con retraso.</div>`;
+}
+
+async function guardarHito(leadId, evento, input) {
+  if (!input.value) return;               // vaciar el campo no es una fecha: no se manda nada
+  input.disabled = true;
+  const r = await api('PATCH', `/leads/${leadId}/eventos/${evento}`, { fecha: input.value });
+  input.disabled = false;
+  if (!r || r.detail) {
+    alert('No se pudo mover la fecha: ' + ((r && r.detail) || 'error de conexión'));
+    loadDetail(leadId);                   // se recarga para no dejar en pantalla un valor falso
+  }
+}
+
 /* ══════════ Notas ══════════ */
 function notasPanel(leadId, notas) {
   const items = (notas && notas.items) || [];
@@ -1767,18 +1903,93 @@ async function scoreDetail(leadId, btn) {
   else if (btn) { btn.disabled = false; btn.textContent = 'Calcular score'; }
 }
 
+/* ══════════ Scoreboard ══════════ */
+
+/* Lunes a domingo de la semana con `offset` (0 = esta, -1 = la pasada). Escribe en el rango
+   COMPARTIDO, asi que el dashboard y la tabla de leads quedan mirando la misma semana: si
+   cada pantalla tuviera su periodo, cuadrar los numeros entre ellas seria imposible. */
+function ponerSemana(offset) {
+  const hoy = new Date();
+  const lunes = new Date(hoy.getFullYear(), hoy.getMonth(),
+                         hoy.getDate() - ((hoy.getDay() + 6) % 7) + offset * 7);
+  const domingo = new Date(lunes.getFullYear(), lunes.getMonth(), lunes.getDate() + 6);
+  dateRange = { desde: isoDia(lunes), hasta: isoDia(domingo) };
+  document.getElementById('d-desde').value = dateRange.desde;
+  document.getElementById('d-hasta').value = dateRange.hasta;
+  document.getElementById('d-mes').value = '';
+  document.getElementById('d-anio').value = '';
+  recargarPorRango();
+}
+
+let scoreboardActual = null;
+
+async function loadScoreboard() {
+  const el = document.getElementById('sb-body');
+  renderRangeChip('range-chip-sb');
+  const s = await api('GET', '/scoreboard?' + aplicarRango(new URLSearchParams()));
+  if (!s) return;
+  scoreboardActual = s;
+
+  const filas = [['Leads nuevos', s.leads_nuevos, 0]].concat(
+    s.orden.map(v => [TAG_LABEL[v] || v, (s.por_evento || {})[v] || 0,
+                      (s.aproximados || {})[v] || 0]));
+  const aprox = Object.values(s.aproximados || {}).reduce((a, b) => a + b, 0);
+
+  el.innerHTML = `
+    ${hayRango() ? '' : '<div class="empty-box">Sin semana elegida se están contando todos los hitos del histórico. Pulsa «Esta semana» o «Semana pasada».</div>'}
+    <div class="card"><table>
+      <thead><tr><th>Concepto</th><th style="text-align:right">Cantidad</th></tr></thead>
+      <tbody>${filas.map(([l, n, a]) => `
+        <tr><td>${esc(l)}</td><td style="text-align:right"><b>${n}</b>${
+          a ? ` <span class="hint">(${a} aprox.)</span>` : ''}</td></tr>`).join('')}
+      </tbody>
+    </table></div>
+    ${aprox ? `<div class="hint" style="margin-top:10px">${aprox} hito${aprox !== 1 ? 's' : ''} vienen del etiquetado anterior a este registro: su fecha es una estimación, no el día en que ocurrió.</div>` : ''}`;
+}
+
+/* Esto es lo que evita contar a mano: el Scoreboard sale ya en texto para pegar donde se
+   lleve. Si el navegador no da permiso de portapapeles, se muestra para poder copiarlo. */
+async function copiarScoreboard() {
+  const s = scoreboardActual;
+  if (!s) return;
+  const lineas = [`Scoreboard ${s.desde || '(todo)'} a ${s.hasta || '(todo)'}`,
+                  `Leads nuevos: ${s.leads_nuevos}`].concat(
+    s.orden.map(v => `${TAG_LABEL[v] || v}: ${(s.por_evento || {})[v] || 0}`));
+  const texto = lineas.join('\n');
+  try {
+    await navigator.clipboard.writeText(texto);
+    alert('Scoreboard copiado.');
+  } catch (e) {
+    alert(texto);
+  }
+}
+
 /* ══════════ Etiquetado ══════════ */
 async function loadEtiquetado() {
   const listEl = document.getElementById('tag-list');
   // Sin ninguna etiqueta, no outcome='nuevo': un lead al que solo se le puso el
   // responsable ya paso por aqui y no debe reaparecer en la cola.
-  const data = await api('GET', '/leads?' + new URLSearchParams({
+  // has_transcript va porque sin conversacion no hay nada que leer ni que decidir; es la
+  // misma condicion que cuenta sin_etiquetas en /api/stats, para que cuadren.
+  const params = new URLSearchParams({
     sin_etiquetas: 'true', has_transcript: 'true', limit: 200, offset: 0,
-  }));
+  });
+  aplicarRango(params);
+  renderRangeChip('range-chip-tag');
+  const data = await api('GET', '/leads?' + params);
   if (!data) return;
 
+  document.getElementById('tag-count').textContent =
+    `${data.total} pendiente${data.total !== 1 ? 's' : ''}`;
+
   if (!data.items.length) {
-    listEl.innerHTML = '<div class="empty-box">🎉 No quedan leads pendientes de etiquetar.</div>';
+    // Distinguir «no queda nada» de «no queda nada EN ESTE RANGO». Sin esto, filtrar una
+    // semana tranquila diria «todo etiquetado» con 186 leads esperando, y nadie volveria.
+    listEl.innerHTML = hayRango()
+      ? `<div class="empty-box">No quedan leads pendientes de etiquetar entre
+           ${esc(textoRango())}.<br><button class="btn-sm" style="margin-top:10px"
+           onclick="limpiarRango()">Ver todo el pendiente</button></div>`
+      : '<div class="empty-box">No quedan leads pendientes de etiquetar.</div>';
     document.getElementById('tag-panel').innerHTML = '<div class="empty-box">Todo etiquetado.</div>';
     tagSelected = null;
     return;
