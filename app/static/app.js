@@ -2,8 +2,8 @@ const PAGE = 50;
 let page = 0;
 let currentLeadId = null;   // detalle
 let tagSelected = null;     // etiquetado
-// Rango de fechas de captura. Unico filtro que NO vive en el DOM: se comparte entre
-// #dashboard (donde estan los controles) y #leads (que solo lo refleja en un chip).
+// Rango de fechas de captura. Unico filtro que NO vive en el DOM: lo comparten las cuatro
+// vistas, y cada una lo enseña en su chip de periodo.
 let dateRange = { desde: '', hasta: '' };
 let aniosCargados = false;
 // El texto buscado vive en el DOM (#q-inp); esto solo guarda el temporizador del debounce,
@@ -19,8 +19,8 @@ const SEG_FILTROS = [
 ];
 
 /* Etiquetas de lead: unica definicion del frontend. Filtros, badges, botones y las
-   tarjetas del dashboard se generan desde aqui; debe coincidir con TAG_GROUPS de main.py.
-   v = slug guardado en BD, l = etiqueta visible, c = sufijo de las clases badge-/sel-. */
+   listas del dashboard se generan desde aqui; debe coincidir con TAG_GROUPS de main.py.
+   v = slug guardado en BD, l = etiqueta visible, c = sufijo de las clases badge-/sel-/dot-. */
 const TAG_GROUPS = [
   { key: 'estado', label: 'Estado', tags: [
     { v: 'lead_interesado',     l: 'Lead interesado',     c: 'blue' },
@@ -65,10 +65,106 @@ for (const g of TAG_GROUPS) for (const t of g.tags) {
   TAG_LABEL[t.v] = t.l; TAG_CLASS[t.v] = t.c; TAG_GROUP[t.v] = g.key; TAG_ORDER.push(t.v);
 }
 
+/* ══════════ Utilidades ══════════ */
 function esc(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+/* Icono del sprite de index.html. currentColor: toma el color de donde se pinte. */
+function ico(nombre, cls = '') {
+  return `<svg class="ico ${cls}" aria-hidden="true"><use href="#i-${nombre}"/></svg>`;
+}
+
+function cap(s) { return String(s ?? '').charAt(0).toUpperCase() + String(s ?? '').slice(1); }
+
+function $(id) { return document.getElementById(id); }
+
+/* Avatar de iniciales con color determinista: el mismo lead se ve igual en la tabla, el
+   buscador, la cola de etiquetado y el detalle, sin guardar nada. */
+function hueDe(s) {
+  let h = 0;
+  for (const ch of String(s)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return h % 360;
+}
+function iniciales(nombre) {
+  const p = String(nombre || '').trim().split(/\s+/).filter(Boolean);
+  if (!p.length) return '';
+  return (p[0][0] + (p[1] ? p[1][0] : '')).toUpperCase();
+}
+function avatar(nombre, cls = '', semilla) {
+  const ini = iniciales(nombre);
+  const h = hueDe(nombre || semilla || '?');
+  const style = ini
+    ? `--av-bg:hsl(${h} 70% 92%);--av-fg:hsl(${h} 55% 32%)`
+    : '--av-bg:var(--ground-2);--av-fg:var(--ink-3)';
+  return `<span class="avatar ${cls}" style="${style}" aria-hidden="true">${esc(ini || '#')}</span>`;
+}
+function nombreLead(l) { return l.contact_name || l.wa_display_name || ''; }
+
+/* Anillo de probabilidad. El color sigue el umbral de probColor, y el numero va dentro. */
+function scoreRing(pct, size = 32) {
+  const grande = size >= 48;
+  const sw = grande ? 5 : 3;
+  const r = (size - sw) / 2;
+  const c = 2 * Math.PI * r;
+  const off = c * (1 - Math.min(100, Math.max(0, pct)) / 100);
+  const m = size / 2;
+  return `<span class="ring${grande ? ' ring-lg' : ''}" style="width:${size}px;height:${size}px;--ring-color:${probColor(pct)}"
+      role="img" aria-label="${pct} por ciento de probabilidad de conversión" title="${pct}% de probabilidad de conversión">
+    <svg viewBox="0 0 ${size} ${size}"><circle class="ring-bg" cx="${m}" cy="${m}" r="${r}"/>
+      <circle class="ring-fg" cx="${m}" cy="${m}" r="${r}" stroke-dasharray="${c.toFixed(2)}" stroke-dashoffset="${off.toFixed(2)}" transform="rotate(-90 ${m} ${m})"/></svg>
+    <span class="ring-txt">${pct}${grande ? '<small>%</small>' : ''}</span></span>`;
+}
+
+function probColor(pct) {
+  if (pct >= 60) return 'var(--ok)';
+  if (pct >= 30) return 'var(--c-amber)';
+  return 'var(--ink-3)';
+}
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleDateString('es-PE', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+/* Fechas sin hora ('YYYY-MM-DD'). fmtDate las parsearia como UTC y en Lima mostraria el
+   dia anterior; el sufijo horario las ancla a hora local. */
+function fmtDia(iso) { return iso ? fmtDate(iso + 'T00:00:00') : '—'; }
+
+function fmtFechaHora(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString('es-PE', {
+    day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+}
+
+/* Dias que lleva vencido un 'YYYY-MM-DD' (0 = hoy, negativo = aun no vence). Se compara
+   por dia y no por instante: un paso para hoy no esta vencido a las 11 de la noche. */
+function diasDesde(iso) {
+  const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+  return Math.round((hoy - new Date(iso + 'T00:00:00')) / 86400000);
+}
+
+function enCampo(el) {
+  return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
+}
+
+/* ══════════ Toasts ══════════ */
+/* Sustituyen a alert(): no bloquean y no paran lo que se estaba haciendo. */
+const TOAST_ICONO = { ok: 'check-circle', crit: 'x-circle', info: 'info' };
+function toast(mensaje, tipo = 'info', ms = 4000) {
+  const el = document.createElement('div');
+  el.className = `toast toast-${tipo}`;
+  el.setAttribute('role', tipo === 'crit' ? 'alert' : 'status');
+  el.innerHTML = `${ico(TOAST_ICONO[tipo] || 'info')}<div>${esc(mensaje)}</div>`;
+  $('toasts').appendChild(el);
+  setTimeout(() => {
+    el.classList.add('is-leaving');
+    setTimeout(() => el.remove(), 220);
+  }, ms);
+}
+
+/* ══════════ Sesion ══════════ */
 function token() { return localStorage.getItem('mau_tk') || ''; }
 function logout() { localStorage.removeItem('mau_tk'); location.reload(); }
 
@@ -83,16 +179,80 @@ function usuarioActual() {
 
 function renderUsuario() {
   const u = usuarioActual();
-  document.getElementById('header-user').style.display = u ? 'flex' : 'none';
-  document.getElementById('user-chip').textContent = u ? cap(u) : '';
-  // Sin sesion no se ensena un buscador que no puede buscar nada.
-  document.querySelector('.search').style.display = u ? '' : 'none';
+  $('header-user').hidden = !u;
+  $('user-chip').textContent = u ? cap(u) : '';
+  $('user-avatar').textContent = u ? u.charAt(0).toUpperCase() : '';
+  // Sin sesion no se enseña un buscador que no puede buscar nada, ni una campana vacia.
+  $('search').hidden = !u;
+  $('bell').hidden = !u;
 }
 
-/* Iconos del ojo, en SVG y no en emoji: heredan el color del boton con currentColor y se
-   ven igual en cualquier sistema, en vez de depender de como pinte cada uno los emoji. */
-const SVG_OJO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
-const SVG_OJO_TACHADO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+/* ══════════ Barra lateral, menus y drawer ══════════ */
+function toggleUserMenu(e) {
+  e.stopPropagation();
+  const menu = $('user-menu');
+  const abrir = menu.hidden;
+  cerrarMenus();
+  menu.hidden = !abrir;
+  $('user-btn').setAttribute('aria-expanded', abrir ? 'true' : 'false');
+}
+function cerrarMenus() {
+  $('user-menu').hidden = true;
+  $('user-btn').setAttribute('aria-expanded', 'false');
+}
+
+/* Preferencia guardada: 'collapsed' fuerza el riel, 'expanded' fuerza el menu completo
+   (por encima del riel automatico de laptop), vacio deja el ancho decidir. El umbral de
+   1440 es el mismo que el @media de styles.css: por debajo, riel salvo que se pida lo otro. */
+function aplicarSidebar() {
+  const pref = localStorage.getItem('mau_sidebar') || '';
+  const shell = $('shell');
+  shell.classList.toggle('collapsed', pref === 'collapsed');
+  shell.classList.toggle('expanded', pref === 'expanded');
+  const riel = pref === 'collapsed' || (window.innerWidth < 1440 && pref !== 'expanded');
+  const btn = $('collapse-btn');
+  btn.title = btn.ariaLabel = riel ? 'Expandir menú' : 'Contraer menú';
+}
+function toggleSidebar() {
+  const shell = $('shell');
+  const riel = shell.classList.contains('collapsed')
+    || (window.innerWidth < 1440 && !shell.classList.contains('expanded'));
+  localStorage.setItem('mau_sidebar', riel ? 'expanded' : 'collapsed');
+  aplicarSidebar();
+}
+function abrirDrawer() { $('shell').classList.add('drawer-open'); }
+function cerrarDrawer() { $('shell').classList.remove('drawer-open'); }
+function toggleSearchMobile() {
+  const abierto = $('topbar').classList.toggle('search-open');
+  if (abierto) { $('q-inp').focus(); }
+}
+function enfocarBuscador() {
+  if (window.matchMedia('(max-width: 899px)').matches) $('topbar').classList.add('search-open');
+  const inp = $('q-inp');
+  inp.focus();
+  inp.select();
+}
+
+/* ══════════ Modales ══════════ */
+function abrirModal(id) {
+  const o = $(id);
+  o.classList.add('open');
+  const primero = o.querySelector('input:not([type=hidden]):not([disabled]), textarea');
+  if (primero) primero.focus();
+}
+function cerrarModal(id) { $(id).classList.remove('open'); }
+
+/* Escape cierra lo que este abierto, de lo mas efimero (popover) a lo mas pesado (modal).
+   El login no se cierra: sin sesion no hay a donde volver. */
+function onEscape() {
+  cerrarTagPops();
+  cerrarPeriodo();
+  ocultarResultados();
+  cerrarMenus();
+  cerrarFiltros();
+  const abiertos = [...document.querySelectorAll('.overlay.open')].filter(o => o.id !== 'auth-overlay');
+  if (abiertos.length) abiertos[abiertos.length - 1].classList.remove('open');
+}
 
 /* Ojo para ver lo que se escribe en los campos de contraseña. Se aplica de una vez a todos
    (el del login y los tres del cambio) en lugar de repetir el mismo marcado cuatro veces.
@@ -113,7 +273,7 @@ function montarOjosClave() {
     btn.tabIndex = -1;   // fuera del recorrido con Tab: estorba entre usuario y contraseña
     const pintar = () => {
       const oculta = inp.type === 'password';
-      btn.innerHTML = oculta ? SVG_OJO : SVG_OJO_TACHADO;
+      btn.innerHTML = ico(oculta ? 'eye' : 'eye-off');
       // Sin texto dentro del boton, title y aria-label son la unica pista de que hace.
       btn.title = btn.ariaLabel = oculta ? 'Mostrar contraseña' : 'Ocultar contraseña';
     };
@@ -129,25 +289,25 @@ function montarOjosClave() {
 
 /* ══════════ Cambio de contraseña ══════════ */
 function openClave() {
-  document.getElementById('clave-quien').textContent = cap(usuarioActual()) || 'tu usuario';
+  cerrarMenus();
+  $('clave-quien').textContent = cap(usuarioActual()) || 'tu usuario';
   ['clave-actual', 'clave-nueva', 'clave-rep'].forEach(id => {
-    const inp = document.getElementById(id);
+    const inp = $(id);
     inp.value = '';
     // Si quedaron a la vista la vez anterior, se vuelven a ocultar.
     if (inp.type === 'text') inp.parentNode.querySelector('.pw-ojo').click();
   });
-  document.getElementById('clave-err').style.display = 'none';
-  document.getElementById('clave-overlay').classList.add('open');
-  document.getElementById('clave-actual').focus();
+  $('clave-err').hidden = true;
+  abrirModal('clave-overlay');
 }
 
-function closeClave() { document.getElementById('clave-overlay').classList.remove('open'); }
+function closeClave() { cerrarModal('clave-overlay'); }
 
 async function doCambiarClave(e) {
   e.preventDefault();
-  const val = id => document.getElementById(id).value;
-  const err = document.getElementById('clave-err');
-  const fallo = m => { err.textContent = m; err.style.display = 'block'; };
+  const val = id => $(id).value;
+  const err = $('clave-err');
+  const fallo = m => { err.textContent = m; err.hidden = false; };
   const [actual, nueva, rep] = ['clave-actual', 'clave-nueva', 'clave-rep'].map(val);
 
   // Lo que se puede comprobar sin servidor, se comprueba aqui: repetirla mal es el error
@@ -156,22 +316,22 @@ async function doCambiarClave(e) {
   if (nueva.length < 8) return fallo('La nueva contraseña debe tener al menos 8 caracteres.');
   if (nueva === actual) return fallo('La nueva contraseña es igual a la actual.');
 
-  const btn = document.getElementById('clave-btn');
+  const btn = $('clave-btn');
   btn.disabled = true; btn.textContent = 'Guardando…';
   const r = await api('POST', '/password', { actual, nueva });
   btn.disabled = false; btn.textContent = 'Guardar';
   if (!r) return;                        // sesion caducada: api() ya mostro el login
   if (!r.ok) return fallo(r.detail || 'No se pudo cambiar la contraseña.');
   closeClave();
-  alert('Contraseña cambiada. La próxima vez que entres, usa la nueva.');
+  toast('Contraseña cambiada. La próxima vez que entres, usa la nueva.', 'ok', 6000);
 }
 
 async function doLogin(e) {
   e.preventDefault();
-  const username = document.getElementById('user-inp').value.trim();
-  const password = document.getElementById('pass-inp').value;
+  const username = $('user-inp').value.trim();
+  const password = $('pass-inp').value;
   if (!username || !password) return;
-  const btn = document.getElementById('login-btn');
+  const btn = $('login-btn');
   btn.disabled = true; btn.textContent = 'Ingresando…';
   try {
     const res = await fetch('/api/login', {
@@ -181,14 +341,14 @@ async function doLogin(e) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.token) {
-      const err = document.getElementById('auth-err');
+      const err = $('auth-err');
       err.textContent = data.detail || 'Credenciales incorrectas. Vuelve a intentarlo.';
-      err.style.display = 'block';
+      err.hidden = false;
       return;
     }
     localStorage.setItem('mau_tk', data.token);
-    document.getElementById('auth-err').style.display = 'none';
-    document.getElementById('auth-overlay').classList.remove('open');
+    $('auth-err').hidden = true;
+    $('auth-overlay').classList.remove('open');
     renderUsuario();
     route();
   } finally {
@@ -200,10 +360,10 @@ async function doLogin(e) {
    CSV no pasa por ahi (descarga un fichero, no JSON) y un 401 tiene que echar igual. */
 function sesionExpirada() {
   localStorage.removeItem('mau_tk');
-  const err = document.getElementById('auth-err');
+  const err = $('auth-err');
   err.textContent = 'Tu sesión expiró. Vuelve a iniciar sesión.';
-  err.style.display = 'block';
-  document.getElementById('auth-overlay').classList.add('open');
+  err.hidden = false;
+  $('auth-overlay').classList.add('open');
   renderUsuario();
 }
 
@@ -222,33 +382,9 @@ async function api(method, path, body) {
   return res.json();
 }
 
-function fmtDate(iso) {
-  if (!iso) return '—';
-  return new Date(iso).toLocaleDateString('es-PE', { day: '2-digit', month: 'short', year: 'numeric' });
-}
-
-/* Fechas sin hora ('YYYY-MM-DD'). fmtDate las parsearia como UTC y en Lima mostraria el
-   dia anterior; el sufijo horario las ancla a hora local. */
-function fmtDia(iso) { return iso ? fmtDate(iso + 'T00:00:00') : '—'; }
-
-function fmtFechaHora(iso) {
-  if (!iso) return '—';
-  return new Date(iso).toLocaleString('es-PE', {
-    day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
-  });
-}
-
-function cap(s) { return String(s ?? '').charAt(0).toUpperCase() + String(s ?? '').slice(1); }
-
-/* Dias que lleva vencido un 'YYYY-MM-DD' (0 = hoy, negativo = aun no vence). Se compara
-   por dia y no por instante: un paso para hoy no esta vencido a las 11 de la noche. */
-function diasDesde(iso) {
-  const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
-  return Math.round((hoy - new Date(iso + 'T00:00:00')) / 86400000);
-}
-
 /* ══════════ Router ══════════ */
 const VIEWS = ['dashboard', 'leads', 'detail', 'etiquetado', 'scoreboard'];
+const TITULOS = { dashboard: 'Dashboard', leads: 'Leads', detail: 'Detalle del lead', etiquetado: 'Etiquetado', scoreboard: 'Scoreboard' };
 
 function nav(view, param) {
   location.hash = param ? `#${view}/${param}` : `#${view}`;
@@ -262,11 +398,19 @@ function route() {
   if (!token()) return;
   const [view, param] = (location.hash.replace(/^#/, '') || 'dashboard').split('/');
   const v = VIEWS.includes(view) ? view : 'dashboard';
-  VIEWS.forEach(x => document.getElementById('view-' + x).style.display = (x === v) ? '' : 'none');
+  VIEWS.forEach(x => { $('view-' + x).hidden = x !== v; });
   document.querySelectorAll('.nav-item').forEach(el => {
-    const navView = el.dataset.view;
-    el.classList.toggle('active', navView === v || (v === 'detail' && navView === 'leads'));
+    const on = el.dataset.view === v || (v === 'detail' && el.dataset.view === 'leads');
+    el.classList.toggle('active', on);
+    if (on) el.setAttribute('aria-current', 'page'); else el.removeAttribute('aria-current');
   });
+  $('topbar-title').textContent = TITULOS[v];
+  // Solo la tabla de leads ocupa la altura sobrante y desplaza dentro de su caja.
+  $('main').classList.toggle('fit', v === 'leads');
+  $('main').scrollTop = 0;
+  window.scrollTo(0, 0);
+  cerrarDrawer(); cerrarTagPops(); cerrarPeriodo(); ocultarResultados(); cerrarMenus();
+  renderRangeChip();
   if (v === 'dashboard') loadDashboard();
   if (v === 'leads') loadLeads();
   if (v === 'detail') loadDetail(param);
@@ -278,97 +422,112 @@ function route() {
 window.addEventListener('hashchange', route);
 
 /* ══════════ Dashboard ══════════ */
+function kpi({ label, valor, pie, icono, cls = '', onclick = '', title = '' }) {
+  const tag = onclick ? 'button' : 'div';
+  return `<${tag} class="kpi${onclick ? ' kpi-link' : ''} ${cls}"${onclick ? ` type="button" onclick="${onclick}"` : ''}${title ? ` title="${esc(title)}"` : ''}>
+      <div class="kpi-head"><span class="kpi-label">${label}</span>${ico(icono)}</div>
+      <div class="kpi-value">${valor}</div>
+      <div class="kpi-foot"><span>${pie}</span>${onclick ? ico('arrow-right') : ''}</div>
+    </${tag}>`;
+}
+
+function skeletonKpis() {
+  return Array(5).fill('<div class="kpi skeleton-tile skeleton"></div>').join('');
+}
+
 async function loadDashboard() {
+  if (!$('kpi-grid').children.length) $('kpi-grid').innerHTML = skeletonKpis();
   const s = await api('GET', '/stats?' + aplicarRango(new URLSearchParams()));
   if (!s) return;
   poblarAnios(s.primer_lead);
   renderFrescura(s.fuente);
 
   const prob = s.prob_promedio != null ? Math.round(s.prob_promedio * 100) + '<small>%</small>' : '—';
-  document.getElementById('kpi-grid').innerHTML = `
-    <div class="kpi">
-      <div class="kpi-label">Total de leads</div>
-      <div class="kpi-value">${s.total}</div>
-      <div class="kpi-foot">${s.con_transcript} con conversación</div>
-    </div>
-    <div class="kpi">
-      <div class="kpi-label">Calificados</div>
-      <div class="kpi-value">${s.calificados}</div>
-      <div class="kpi-foot">${s.total ? Math.round(s.calificados / s.total * 100) : 0}% del total</div>
-    </div>
-    <div class="kpi">
-      <div class="kpi-label">Clientes</div>
-      <div class="kpi-value">${s.clientes}</div>
-      <div class="kpi-foot">conversiones confirmadas</div>
-    </div>
-    <div class="kpi">
-      <div class="kpi-label">P(conversión) promedio</div>
-      <div class="kpi-value">${prob}</div>
-      <div class="kpi-foot">${s.con_score} lead${s.con_score !== 1 ? 's' : ''} puntuados por el modelo</div>
-    </div>
-    <div class="kpi" style="cursor:pointer" onclick="goLeadsSeguimiento('vencido')"
-         title="Ver los leads con el siguiente paso vencido">
-      <div class="kpi-label">Seguimientos vencidos</div>
-      <div class="kpi-value" ${s.seguimientos_vencidos ? 'style="color:var(--red)"' : ''}>${s.seguimientos_vencidos || 0}</div>
-      <div class="kpi-foot">siguiente paso con fecha ya pasada</div>
-    </div>`;
+  const vencidos = s.seguimientos_vencidos || 0;
+  $('kpi-grid').innerHTML = [
+    kpi({ label: 'Total de leads', valor: s.total, pie: `${s.con_transcript} con conversación`, icono: 'users' }),
+    kpi({ label: 'Calificados', valor: s.calificados, pie: `${s.total ? Math.round(s.calificados / s.total * 100) : 0} % del total`, icono: 'target' }),
+    kpi({ label: 'Clientes', valor: s.clientes, pie: 'conversiones confirmadas', icono: 'award' }),
+    kpi({ label: 'Prob. de conversión', valor: prob, pie: `promedio de ${s.con_score} lead${s.con_score !== 1 ? 's' : ''} puntuados`, icono: 'gauge' }),
+    kpi({ label: 'Seguimientos vencidos', valor: vencidos, pie: 'siguiente paso con fecha pasada', icono: 'clock',
+          cls: vencidos ? 'kpi-crit' : '', onclick: "goLeadsSeguimiento('vencido')",
+          title: 'Ver los leads con el siguiente paso vencido' }),
+  ].join('');
 
   loadAlertaBox();
 
   const porPlan = s.por_plan_estado || {};
   const sincronizado = Object.values(porPlan).reduce((a, b) => a + b, 0);
-  document.getElementById('plan-grid').innerHTML = sincronizado
-    ? `<div class="outcome-grid">${PLAN_ESTADOS.map(p => `
-        <div class="outcome-card" onclick="goLeadsPlan('${p.v}')">
-          <span class="badge badge-${p.c}">${esc(p.l)}</span>
-          <span class="outcome-n">${porPlan[p.v] || 0}</span>
-        </div>`).join('')}</div>`
-    : `<div class="empty-box">Todavía no se ha sincronizado con MAU Comunica.
-         Pulsa <b>Sincronizar planes</b> para traer el estado de cada lead.</div>`;
+  $('plan-grid').innerHTML = renderEmbudo(porPlan, sincronizado);
 
   const porTag = s.por_tag || {};
   // Un lead con varias etiquetas cuenta en cada una: los grupos no suman el total, y por
-  // eso el pendiente de etiquetar va como tarjeta aparte al final.
-  document.getElementById('outcome-grid').innerHTML = TAG_GROUPS.map(g => `
-    <div class="tag-group-title">${g.label}</div>
-    <div class="outcome-grid">${g.tags.map(t => `
-      <div class="outcome-card" onclick="goLeadsFiltered('${t.v}')">
-        <span class="badge badge-${t.c}">${esc(t.l)}</span>
-        <span class="outcome-n">${porTag[t.v] || 0}</span>
-      </div>`).join('')}</div>`).join('') + `
-    <div class="tag-group-title">Pendientes</div>
-    <div class="outcome-grid">
-      <div class="outcome-card" onclick="nav('etiquetado')">
-        <span class="badge badge-gray">Sin etiquetar</span>
-        <span class="outcome-n">${s.sin_etiquetas || 0}</span>
-      </div>
+  // eso el pendiente de etiquetar va como lista aparte al final.
+  $('outcome-grid').innerHTML = TAG_GROUPS.map(g => barlist(g.label,
+    g.tags.map(t => ({ l: t.l, c: t.c, n: porTag[t.v] || 0, onclick: `goLeadsFiltered('${t.v}')` })),
+  )).join('') + barlist('Pendientes', [
+    { l: 'Sin etiquetar', c: 'gray', n: s.sin_etiquetas || 0, onclick: "nav('etiquetado')", pendiente: true },
+  ], 'con conversación y sin etiqueta');
+}
+
+/* Barra apilada: un segmento por estado, proporcional a cuantos leads hay en el. Debajo,
+   la leyenda con el numero, para que la barra se lea y ademas se pueda contar. */
+function renderEmbudo(porPlan, sincronizado) {
+  if (!sincronizado) {
+    return `<div class="empty">${ico('refresh')}
+      <p>Todavía no se ha sincronizado con MAU Comunica. Trae el estado comercial de cada lead para ver el embudo.</p>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="syncPlanes()">Sincronizar planes</button></div>`;
+  }
+  const segs = PLAN_ESTADOS.map(p => ({ ...p, n: porPlan[p.v] || 0 }));
+  const pct = n => Math.round(n / sincronizado * 100);
+  return `<div class="stack">${segs.filter(s => s.n).map(s => `
+      <button type="button" class="stack-seg dot-${s.c}" style="flex:${s.n} 1 0" title="${esc(s.l)}: ${s.n} (${pct(s.n)} %)"
+              aria-label="${esc(s.l)}: ${s.n}" onclick="goLeadsPlan('${s.v}')"></button>`).join('')}</div>
+    <div class="legend">${segs.map(s => `
+      <button type="button" class="legend-item" onclick="goLeadsPlan('${s.v}')">
+        <i class="dot dot-${s.c}"></i>${esc(s.l)}<b>${s.n}</b><span class="hint">${pct(s.n)} %</span>
+      </button>`).join('')}</div>`;
+}
+
+/* Lista con barra: cada fila pinta su proporcion respecto al mayor del grupo. Se lee de
+   un vistazo cual pesa mas, cosa que una rejilla de numeros sueltos no dice. */
+function barlist(titulo, filas, sub = '') {
+  const max = Math.max(1, ...filas.map(f => f.n));
+  return `<div class="card barlist-card">
+      <h4>${esc(titulo)}${sub ? `<span>${esc(sub)}</span>` : ''}</h4>
+      <div class="barlist">${filas.map(f => `
+        <button type="button" class="barlist-row${f.pendiente ? ' is-pending' : ''}" onclick="${f.onclick}">
+          <span class="barlist-label"><i class="dot dot-${f.c}"></i><span>${esc(f.l)}</span></span>
+          <span class="barlist-bar"><span class="barlist-fill" style="width:${Math.round(f.n / max * 100)}%"></span></span>
+          <b class="barlist-n">${f.n}</b>
+        </button>`).join('')}</div>
     </div>`;
 }
 
-/* Deja solo el filtro pedido activo y limpia los demas, para que al llegar desde una
-   tarjeta del dashboard el conteo de la tabla cuadre con el de la tarjeta. */
+/* Deja solo el filtro pedido activo y limpia los demas, para que al llegar desde el
+   dashboard el conteo de la tabla cuadre con el numero que se pulso. */
 function goLeadsFiltered(tag) {
   for (const g of TAG_GROUPS) {
-    document.getElementById(`f-tag-${g.key}`).value = g.key === TAG_GROUP[tag] ? tag : '';
+    $(`f-tag-${g.key}`).value = g.key === TAG_GROUP[tag] ? tag : '';
   }
-  document.getElementById('f-plan').value = '';
-  document.getElementById('f-seg').value = '';
+  $('f-plan').value = '';
+  $('f-seg').value = '';
   page = 0;
   nav('leads');
 }
 
 function goLeadsPlan(estado) {
-  for (const g of TAG_GROUPS) document.getElementById(`f-tag-${g.key}`).value = '';
-  document.getElementById('f-plan').value = estado;
-  document.getElementById('f-seg').value = '';
+  for (const g of TAG_GROUPS) $(`f-tag-${g.key}`).value = '';
+  $('f-plan').value = estado;
+  $('f-seg').value = '';
   page = 0;
   nav('leads');
 }
 
 function goLeadsSeguimiento(valor) {
-  for (const g of TAG_GROUPS) document.getElementById(`f-tag-${g.key}`).value = '';
-  document.getElementById('f-plan').value = '';
-  document.getElementById('f-seg').value = valor;
+  for (const g of TAG_GROUPS) $(`f-tag-${g.key}`).value = '';
+  $('f-plan').value = '';
+  $('f-seg').value = valor;
   page = 0;
   nav('leads');
 }
@@ -383,29 +542,26 @@ function hace(horas) {
   return `hace ${Math.floor(horas / 24)} días`;
 }
 
-const SVG_FRESCURA_MAL = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5"/><path d="M12 16.5h.01"/></svg>';
-const SVG_FRESCURA_OK = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
-
 function botonTraer() {
-  return '<button class="btn-sm" id="traer-btn" style="white-space:nowrap" onclick="traerLeads()">Traer leads nuevos</button>';
+  return `<button type="button" class="btn btn-secondary btn-sm" id="traer-btn" onclick="traerLeads()">${ico('download', 'ico-sm')}<span>Traer leads nuevos</span></button>`;
 }
 
 /* Se pinta encima de los KPIs y con color propio cuando algo va mal. El fallo que motivó
    esto fue que la entrada de leads estuvo tres días parada y el dashboard se veía idéntico
    a un día normal: el total seguía ahí, tan tranquilo. */
 function renderFrescura(f) {
-  const el = document.getElementById('frescura');
+  const el = $('frescura');
   if (!f) { el.innerHTML = ''; el.className = ''; return; }
 
   if (!f.conocido) {
     el.className = 'frescura';
-    el.innerHTML = '<span>Todavía no se ha revisado la fuente. La primera pasada corre sola a '
-      + 'la hora programada; también puedes lanzarla ahora.</span>' + botonTraer();
+    el.innerHTML = `<div class="frescura-txt"><span class="status-dot" style="background:var(--ink-3);box-shadow:0 0 0 3px var(--ground-2)"></span>
+      <span>Todavía no se ha revisado la fuente. La primera pasada corre sola a la hora programada; también puedes lanzarla ahora.</span></div>` + botonTraer();
   } else if (f.fallo) {
     el.className = 'frescura frescura-mal';
-    el.innerHTML = `<span>${SVG_FRESCURA_MAL}<b>La última actualización falló</b>
+    el.innerHTML = `<div class="frescura-txt">${ico('alert')}<span><b>La última actualización falló</b>
       (${esc(fmtFechaHora(f.ultima_pasada))}). Motivo: ${esc(f.fallo)}.
-      Lo que ves es lo último que sí se pudo traer.</span>` + botonTraer();
+      Lo que ves es lo último que sí se pudo traer.</span></div>` + botonTraer();
   } else if (f.muda) {
     el.className = 'frescura frescura-mal';
     // Se dice el hecho y se dejan las dos causas abiertas. Desde aquí NO se puede distinguir
@@ -416,17 +572,17 @@ function renderFrescura(f) {
     const leidas = f.conversaciones != null
       ? `El inbox se leyó correctamente (${f.conversaciones} conversaciones), pero ninguna tiene mensajes nuevos`
       : 'El inbox se leyó correctamente, pero ninguna conversación tiene mensajes nuevos';
-    el.innerHTML = (f.ultima_actividad
-      ? `<span>${SVG_FRESCURA_MAL}<b>Sin actividad desde el ${esc(fmtFechaHora(f.ultima_actividad))}</b>
+    el.innerHTML = `<div class="frescura-txt">${ico('alert')}<span>` + (f.ultima_actividad
+      ? `<b>Sin actividad desde el ${esc(fmtFechaHora(f.ultima_actividad))}</b>
          (${hace(f.horas_sin_actividad)}). ${leidas}: o no está escribiendo nadie, o algo se
-         cortó antes de llegar a Chatwoot.</span>`
-      : `<span>${SVG_FRESCURA_MAL}<b>No se encontró ninguna conversación en el inbox.</b>
+         cortó antes de llegar a Chatwoot.`
+      : `<b>No se encontró ninguna conversación en el inbox.</b>
          Eso no es un día tranquilo: o cambió la conexión con Chatwoot, o no se está mirando
-         el inbox correcto.</span>`) + botonTraer();
+         el inbox correcto.`) + '</span></div>' + botonTraer();
   } else {
     el.className = 'frescura';
-    el.innerHTML = `<span>${SVG_FRESCURA_OK}Datos al día · última conversación
-      ${hace(f.horas_sin_actividad)} · revisado ${esc(fmtFechaHora(f.ultima_pasada))}</span>`
+    el.innerHTML = `<div class="frescura-txt"><span class="status-dot"></span>
+      <span>Datos al día · última conversación ${hace(f.horas_sin_actividad)} · revisado ${esc(fmtFechaHora(f.ultima_pasada))}</span></div>`
       + botonTraer();
   }
 }
@@ -437,15 +593,16 @@ function renderFrescura(f) {
 let traerTimer = null;
 
 async function traerLeads() {
-  const btn = document.getElementById('traer-btn');
+  const btn = $('traer-btn');
   if (!btn || btn.disabled) return;
+  const lbl = btn.querySelector('span') || btn;
   btn.disabled = true;
-  btn.textContent = 'Trayendo…';
+  lbl.textContent = 'Trayendo…';
 
   const r = await api('POST', '/backfill');
   if (!r || !r.corriendo) {
-    alert('No se pudo iniciar: ' + ((r && r.detail) || 'error de conexión'));
-    btn.disabled = false; btn.textContent = 'Traer leads nuevos';
+    toast('No se pudo iniciar: ' + ((r && r.detail) || 'error de conexión'), 'crit', 6000);
+    btn.disabled = false; lbl.textContent = 'Traer leads nuevos';
     return;
   }
 
@@ -457,18 +614,18 @@ async function traerLeads() {
       // El botón se repinta si alguien recarga el dashboard mientras tanto; comprobarlo
       // evita escribir sobre un nodo que ya no está en la página.
       const min = Math.floor((Date.now() - inicio) / 60000);
-      if (btn.isConnected) btn.textContent = min ? `Trayendo… (${min} min)` : 'Trayendo…';
+      if (btn.isConnected) lbl.textContent = min ? `Trayendo… (${min} min)` : 'Trayendo…';
       return;
     }
     clearInterval(traerTimer);
     traerTimer = null;
     if (e.estado === 'error') {
-      alert('La actualización falló:\n\n' + (e.detalle || 'motivo desconocido'));
+      toast('La actualización falló: ' + (e.detalle || 'motivo desconocido'), 'crit', 8000);
     } else if (e.resultado) {
       const x = e.resultado;
-      alert(`Actualización lista.\n\n${x.nuevos} lead(s) nuevos o con la conversación cambiada.\n`
-          + `${x.sin_cambios} sin cambios y ${x.descartados} descartados por no llegar a ser una conversación.\n`
-          + `Se revisaron ${x.conversaciones} conversaciones del inbox.`);
+      toast(`Actualización lista.\n${x.nuevos} lead(s) nuevos o con la conversación cambiada. `
+          + `${x.sin_cambios} sin cambios y ${x.descartados} descartados por no llegar a ser una conversación. `
+          + `Se revisaron ${x.conversaciones} conversaciones del inbox.`, 'ok', 10000);
     }
     loadDashboard();   // repinta los KPIs y la banda con lo que se acaba de traer
   }, 5000);
@@ -513,13 +670,13 @@ function misAlertas(a) {
 }
 
 async function renderCampana(forzar) {
-  const badge = document.getElementById('bell-badge');
+  const badge = $('bell-badge');
   const a = await cargarAlertas(forzar);
-  if (!a || a.detail) { badge.style.display = 'none'; return; }
+  if (!a || a.detail) { badge.hidden = true; return; }
   const n = misAlertas(a).length;
-  badge.style.display = n ? 'block' : 'none';
+  badge.hidden = !n;
   badge.textContent = n > 99 ? '99+' : n;
-  document.getElementById('bell').title = n
+  $('bell').title = n
     ? `${n} lead${n !== 1 ? 's' : ''} que necesitan algo hoy`
     : 'Nada pendiente hoy';
 }
@@ -528,11 +685,11 @@ async function renderCampana(forzar) {
    el servidor, no unos valores copiados a mano aquí: si alguien cambia ALERTAS_TRIAL_DIAS o
    se queda sin configurar el correo, lo que se lee en el dashboard cambia con ello. */
 async function loadAlertaBox() {
-  const el = document.getElementById('alerta-box');
+  const el = $('alerta-box');
   const a = await cargarAlertas();
   if (!a) return;
   if (a.detail) {
-    el.innerHTML = `<div class="cell-muted">No se pudieron evaluar las alertas: ${esc(a.detail)}</div>`;
+    el.innerHTML = `${ico('alert')}<div class="notice-body">No se pudieron evaluar las alertas: ${esc(a.detail)}</div>`;
     return;
   }
   const u = a.umbrales;
@@ -544,26 +701,28 @@ async function loadAlertaBox() {
     ? ` ${frase(a.sin_dueno)} cumplen la regla pero no tienen responsable, así que no generan alerta.`
     : '';
   const sinCorreo = (a.sin_correo || []).length
-    ? ` <b style="color:var(--red)">Sin correo configurado: ${esc(a.sin_correo.map(cap).join(', '))}</b> — no reciben nada.`
+    ? ` <b style="color:var(--crit)">Sin correo configurado: ${esc(a.sin_correo.map(cap).join(', '))}</b> — no reciben nada.`
     : '';
-  el.innerHTML = `
-    <div>${canal} de las pruebas que vencen en <b>${u.trial_dias} día${u.trial_dias !== 1 ? 's' : ''} o menos</b>
+  el.innerHTML = `${ico('bell')}<div class="notice-body">
+      ${canal} de las pruebas que vencen en <b>${u.trial_dias} día${u.trial_dias !== 1 ? 's' : ''} o menos</b>
       y de los pagos que llevan <b>${u.pago_dias} día${u.pago_dias !== 1 ? 's' : ''} o más</b> sin aprobarse.
-      Cada persona recibe <b>solo sus leads</b>.${huerfanos}${sinCorreo}</div>
-    <button class="btn-sm" style="white-space:nowrap" onclick="verAlertas()">
-      Ver alertas de hoy${a.alertas.length ? ` (${a.alertas.length})` : ''}</button>`;
+      Cada persona recibe <b>solo sus leads</b>.${huerfanos}${sinCorreo}
+      <div class="notice-actions">
+        <button type="button" class="btn btn-secondary btn-sm" onclick="verAlertas()">
+          Ver alertas de hoy${a.alertas.length ? ` (${a.alertas.length})` : ''}</button>
+      </div></div>`;
 }
 
 function alertaItem(x) {
   const detalle = x.tipo === 'trial_por_vencer'
     ? `Prueba ${x.dias === 0 ? '<b>vence hoy</b>' : `vence en <b>${x.dias} día${x.dias !== 1 ? 's' : ''}</b>`} (${esc(fmtDia(x.fecha))})`
     : `Pago esperando aprobación desde hace <b>${x.dias} días</b> (${esc(fmtDia(x.fecha))})`;
-  return `<div class="alerta-item" style="cursor:pointer" onclick="irAlerta('${esc(x.lead_id)}')">
+  return `<button type="button" class="alerta-item" onclick="irAlerta('${esc(x.lead_id)}')">
       <div><b>${esc(x.nombre)}</b>${x.empresa ? ' · ' + esc(x.empresa) : ''}
-        <code style="font-size:11.5px;color:var(--gray-500)">${esc(x.telefono)}</code></div>
+        <code>+${esc(x.telefono)}</code></div>
       <div class="hint">${detalle}</div>
       ${x.siguiente_paso ? `<div class="hint">Siguiente paso: ${esc(x.siguiente_paso)}</div>` : ''}
-    </div>`;
+    </button>`;
 }
 
 function irAlerta(leadId) {
@@ -574,12 +733,12 @@ function irAlerta(leadId) {
 /* forzar=true al abrir la campanita (datos frescos); false al solo cambiar el filtro, que
    no necesita volver a preguntar por lo mismo. */
 async function verAlertas(forzar = true) {
-  const body = document.getElementById('alertas-body');
+  const body = $('alertas-body');
   body.innerHTML = '<div class="modal-loading"><span class="spinner"></span>Evaluando…</div>';
-  document.getElementById('alertas-overlay').classList.add('open');
+  $('alertas-overlay').classList.add('open');
   const a = await cargarAlertas(forzar);
   if (!a) return;
-  if (a.detail) { body.innerHTML = `<div class="empty-box">${esc(a.detail)}</div>`; return; }
+  if (a.detail) { body.innerHTML = `<div class="empty">${ico('alert')}<p>${esc(a.detail)}</p></div>`; return; }
 
   const yo = usuarioActual();
   const mias = misAlertas(a);
@@ -587,8 +746,8 @@ async function verAlertas(forzar = true) {
   const otras = a.alertas.length - mias.length;
 
   if (!lista.length) {
-    body.innerHTML = `<div class="empty-box">Nada pendiente ${verTodasAlertas ? '' : 'para ti '}hoy.</div>`
-      + (otras && !verTodasAlertas ? `<div style="text-align:center"><button class="btn-sm" onclick="alternarAlertas()">Ver las de todo el equipo (${otras})</button></div>` : '');
+    body.innerHTML = `<div class="empty">${ico('check-circle')}<p>Nada pendiente ${verTodasAlertas ? '' : 'para ti '}hoy.</p>
+      ${otras && !verTodasAlertas ? `<button type="button" class="btn btn-secondary btn-sm" onclick="alternarAlertas()">Ver las de todo el equipo (${otras})</button>` : ''}</div>`;
     return;
   }
   const duenos = [...new Set(lista.map(x => x.responsable))].sort();
@@ -601,7 +760,7 @@ async function verAlertas(forzar = true) {
     <div class="hint" style="margin-top:16px">
       Haz clic en un lead para abrirlo. El contador baja cuando el lead deja de cumplir la
       regla, no al mirarlo.
-      ${otras ? `<br><button class="btn-sm" style="margin-top:8px" onclick="alternarAlertas()">${
+      ${otras ? `<br><button type="button" class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="alternarAlertas()">${
         verTodasAlertas ? 'Ver solo las mías' : `Ver las de todo el equipo (${otras} más)`}</button>` : ''}
     </div>
   </div>`;
@@ -612,30 +771,31 @@ function alternarAlertas() {
   return verAlertas(false);   // devuelve la promesa: repintar es asincrono
 }
 
-function closeAlertas() { document.getElementById('alertas-overlay').classList.remove('open'); }
+function closeAlertas() { cerrarModal('alertas-overlay'); }
 
 /* Trae de mau-web el estado comercial de todos los leads. Tarda unos segundos (una
    llamada HTTP mas un UPDATE por lead cruzado), asi que el boton se bloquea mientras. */
 async function syncPlanes() {
-  const btn = document.getElementById('sync-btn');
-  btn.disabled = true; btn.textContent = 'Sincronizando…';
+  const btn = $('sync-btn');
+  const html = btn.innerHTML;
+  btn.disabled = true; btn.innerHTML = ico('refresh', 'ico-sm') + 'Sincronizando…';
   try {
     const r = await api('POST', '/sync-planes');
     if (!r || r.detail) {
-      alert('No se pudo sincronizar: ' + ((r && r.detail) || 'error de conexión con MAU Comunica'));
+      toast('No se pudo sincronizar: ' + ((r && r.detail) || 'error de conexión con MAU Comunica'), 'crit', 7000);
       return;
     }
-    const amb = r.ambiguos ? `\n${r.ambiguos} descartados por tener el teléfono o correo repetido en varias cuentas.` : '';
-    alert(`Sincronización lista.\n\n${r.cruzados} de ${r.leads} leads cruzaron con una cuenta`
-        + ` (${r.por_telefono} por teléfono, ${r.por_correo} por correo).\n`
-        + `${r.sin_cuenta} no tienen cuenta en MAU Comunica.${amb}`);
+    const amb = r.ambiguos ? ` ${r.ambiguos} descartados por tener el teléfono o correo repetido en varias cuentas.` : '';
+    toast(`Sincronización lista. ${r.cruzados} de ${r.leads} leads cruzaron con una cuenta`
+        + ` (${r.por_telefono} por teléfono, ${r.por_correo} por correo). `
+        + `${r.sin_cuenta} no tienen cuenta en MAU Comunica.${amb}`, 'ok', 9000);
     loadDashboard();
   } finally {
-    btn.disabled = false; btn.textContent = 'Sincronizar planes';
+    btn.disabled = false; btn.innerHTML = html;
   }
 }
 
-/* ══════════ Rango de fechas (compartido #dashboard ↔ #leads) ══════════ */
+/* ══════════ Periodo (compartido por las cuatro vistas) ══════════ */
 
 function aplicarRango(params) {
   if (dateRange.desde) params.set('desde', dateRange.desde);
@@ -653,7 +813,7 @@ function isoDia(d) {
    sola vez; /api/stats devuelve primer_lead sin aplicar el filtro de fecha. */
 function poblarAnios(primerLead) {
   if (aniosCargados) return;
-  const sel = document.getElementById('d-anio');
+  const sel = $('d-anio');
   const hasta = new Date().getFullYear();
   const desde = primerLead ? new Date(primerLead).getFullYear() : hasta;
   for (let a = hasta; a >= desde; a--) {
@@ -665,8 +825,8 @@ function poblarAnios(primerLead) {
 /* Atajo Mes/Año: reescribe desde/hasta. Mes sin año usa el año en curso; año sin mes
    toma el año completo. */
 function onAtajoMesAnio() {
-  const vMes  = document.getElementById('d-mes').value;
-  const vAnio = document.getElementById('d-anio').value;
+  const vMes  = $('d-mes').value;
+  const vAnio = $('d-anio').value;
   if (!vMes && !vAnio) return limpiarRango();
 
   const mes  = parseInt(vMes, 10);
@@ -675,32 +835,73 @@ function onAtajoMesAnio() {
   const fin  = mes ? new Date(anio, mes, 0)     : new Date(anio, 11, 31);
 
   dateRange = { desde: isoDia(ini), hasta: isoDia(fin) };
-  document.getElementById('d-desde').value = dateRange.desde;
-  document.getElementById('d-hasta').value = dateRange.hasta;
+  $('d-desde').value = dateRange.desde;
+  $('d-hasta').value = dateRange.hasta;
   recargarPorRango();
 }
 
 /* Edicion manual de desde/hasta: el atajo deja de describir el rango, se limpia. */
 function onRangoManual() {
   dateRange = {
-    desde: document.getElementById('d-desde').value,
-    hasta: document.getElementById('d-hasta').value,
+    desde: $('d-desde').value,
+    hasta: $('d-hasta').value,
   };
-  document.getElementById('d-mes').value = '';
-  document.getElementById('d-anio').value = '';
+  $('d-mes').value = '';
+  $('d-anio').value = '';
   recargarPorRango();
 }
 
 function limpiarRango() {
   dateRange = { desde: '', hasta: '' };
-  ['d-desde', 'd-hasta', 'd-mes', 'd-anio'].forEach(id => document.getElementById(id).value = '');
+  ['d-desde', 'd-hasta', 'd-mes', 'd-anio'].forEach(id => { $(id).value = ''; });
+  cerrarPeriodo();
+  recargarPorRango();
+}
+
+function atajoPeriodo(que) {
+  if (que === 'hoy') {
+    const hoy = isoDia(new Date());
+    ponerRango(hoy, hoy);
+  }
+}
+
+/* Mes natural con `offset` (0 = este, -1 = el pasado). */
+function ponerMes(offset) {
+  const hoy = new Date();
+  const ini = new Date(hoy.getFullYear(), hoy.getMonth() + offset, 1);
+  const fin = new Date(hoy.getFullYear(), hoy.getMonth() + offset + 1, 0);
+  ponerRango(isoDia(ini), isoDia(fin));
+}
+
+/* Lunes a domingo de la semana con `offset` (0 = esta, -1 = la pasada). Escribe en el rango
+   COMPARTIDO, asi que el dashboard y la tabla de leads quedan mirando la misma semana: si
+   cada pantalla tuviera su periodo, cuadrar los numeros entre ellas seria imposible. */
+function ponerSemana(offset) {
+  const [lunes, domingo] = semana(offset);
+  ponerRango(isoDia(lunes), isoDia(domingo));
+}
+
+function semana(offset) {
+  const hoy = new Date();
+  const lunes = new Date(hoy.getFullYear(), hoy.getMonth(),
+                         hoy.getDate() - ((hoy.getDay() + 6) % 7) + offset * 7);
+  const domingo = new Date(lunes.getFullYear(), lunes.getMonth(), lunes.getDate() + 6);
+  return [lunes, domingo];
+}
+
+function ponerRango(desde, hasta) {
+  dateRange = { desde, hasta };
+  $('d-desde').value = desde;
+  $('d-hasta').value = hasta;
+  $('d-mes').value = '';
+  $('d-anio').value = '';
+  cerrarPeriodo();
   recargarPorRango();
 }
 
 function recargarPorRango() {
   page = 0;
-  // La cola de etiquetado tambien obedece al rango, y su chip lleva la ✕ que llama a
-  // limpiarRango(): sin esta rama, quitar el filtro desde ahi no repintaria la lista.
+  renderRangeChip();
   const v = vistaActual();
   if (v === 'leads') loadLeads();
   else if (v === 'etiquetado') loadEtiquetado();
@@ -709,95 +910,249 @@ function recargarPorRango() {
   refreshTagBadge();   // la insignia lateral se ve desde cualquier vista
 }
 
-/* ══════════ Buscador (header) ══════════ */
-
-function textoBusqueda() { return document.getElementById('q-inp').value.trim(); }
-
-/* Una peticion por tecla sobraria; 300 ms es donde ya se dejo de escribir pero todavia no
-   se percibe espera. Buscar desde cualquier vista lleva a la tabla, que es donde se ve. */
-function onBuscar() {
-  // 'block' explicito: el display por defecto de .clr es none, asi que vaciar el estilo
-  // en linea lo dejaria oculto igual.
-  document.getElementById('q-clr').style.display = textoBusqueda() ? 'block' : 'none';
-  clearTimeout(buscarTimer);
-  buscarTimer = setTimeout(() => {
-    page = 0;
-    if (vistaActual() !== 'leads') nav('leads'); else loadLeads();
-  }, 300);
-}
-
-function limpiarBusqueda() {
-  document.getElementById('q-inp').value = '';
-  onBuscar();
-}
-
 function hayRango() { return !!(dateRange.desde || dateRange.hasta); }
 
 /* Texto del rango activo, para reutilizarlo en el chip y en los mensajes de lista vacia. */
 function textoRango() {
   const d = dateRange.desde ? fmtDia(dateRange.desde) : '…';
   const h = dateRange.hasta ? fmtDia(dateRange.hasta) : '…';
-  return `${d} – ${h}`;
+  return d === h ? d : `${d} – ${h}`;
 }
 
-/* Chip de solo lectura: los controles del rango viven en el dashboard, asi que sin esto
-   #leads y #etiquetado apareceran filtrados sin explicacion. `elId` distingue los dos.
-   Solo la tabla de leads tiene buscador, y por eso solo ella puede quedar «en pausa». */
-function renderRangeChip(elId = 'range-chip') {
-  const chip = document.getElementById(elId);
-  if (!chip) return;
-  // Buscar ignora el rango a proposito (ver list_leads en main.py). Si hay un rango puesto
-  // se dice, en vez de dejar un chip azul prometiendo un filtro que no se esta aplicando.
-  if (elId === 'range-chip' && textoBusqueda()) {
-    chip.style.display = hayRango() ? '' : 'none';
-    chip.className = 'badge badge-gray range-chip';
-    chip.innerHTML = 'Filtro de fechas en pausa mientras buscas';
+/* Un solo popover para las cuatro vistas; se ancla al chip que lo abrio. */
+let periodoAncla = null;
+function abrirPeriodo(btn) {
+  const pop = $('periodo-pop');
+  if (!pop.hidden && periodoAncla === btn) { cerrarPeriodo(); return; }
+  cerrarTagPops();
+  periodoAncla = btn;
+  $('d-desde').value = dateRange.desde;
+  $('d-hasta').value = dateRange.hasta;
+  if (!aniosCargados) api('GET', '/stats').then(s => s && poblarAnios(s.primer_lead));
+  pop.hidden = false;
+  const r = btn.getBoundingClientRect();
+  const w = pop.offsetWidth, h = pop.offsetHeight, M = 8;
+  const left = Math.max(M, Math.min(r.left, window.innerWidth - w - M));
+  const top = r.bottom + 6 + h <= window.innerHeight - M ? r.bottom + 6 : Math.max(M, r.top - 6 - h);
+  pop.style.left = `${left}px`;
+  pop.style.top = `${top}px`;
+}
+function cerrarPeriodo() {
+  const pop = $('periodo-pop');
+  if (pop) pop.hidden = true;
+  periodoAncla = null;
+}
+
+/* Chip de periodo, el mismo en las cuatro vistas. Solo la tabla de leads tiene buscador,
+   y por eso solo ella puede quedar «en pausa». */
+function renderRangeChip() {
+  document.querySelectorAll('.periodo-chip').forEach(chip => {
+    const enLeads = !!chip.closest('#view-leads');
+    // Buscar ignora el rango a proposito (ver list_leads en main.py). Si hay un rango puesto
+    // se dice, en vez de dejar un chip azul prometiendo un filtro que no se esta aplicando.
+    if (enLeads && textoBusqueda() && hayRango()) {
+      chip.className = 'chip periodo-chip is-paused';
+      chip.innerHTML = `<button type="button" class="chip-main" onclick="abrirPeriodo(this.parentNode)" title="Mientras buscas, el periodo no se aplica">${ico('calendar', 'ico-sm')}<span>Fechas en pausa mientras buscas</span></button>`;
+      return;
+    }
+    chip.className = 'chip periodo-chip' + (hayRango() ? ' is-active' : '');
+    chip.innerHTML = `<button type="button" class="chip-main" onclick="abrirPeriodo(this.parentNode)" aria-haspopup="dialog" title="Cambiar el periodo">${ico('calendar', 'ico-sm')}<span>${hayRango() ? esc(textoRango()) : 'Todo el histórico'}</span>${ico('chevron-down', 'ico-sm')}</button>`
+      + (hayRango() ? `<button type="button" class="chip-x" onclick="limpiarRango()" title="Quitar el periodo" aria-label="Quitar el periodo">${ico('close', 'ico-sm')}</button>` : '');
+  });
+  pintarSemanaActiva();
+}
+
+/* Marca en el control segmentado del scoreboard la semana que coincide con el rango. */
+function pintarSemanaActiva() {
+  document.querySelectorAll('#sb-semanas button').forEach(b => {
+    const [l, d] = semana(parseInt(b.dataset.semana, 10));
+    b.classList.toggle('active', dateRange.desde === isoDia(l) && dateRange.hasta === isoDia(d));
+  });
+}
+
+/* ══════════ Buscador (barra superior) ══════════ */
+
+function textoBusqueda() { return $('q-inp').value.trim(); }
+
+let resultados = { q: '', items: [], total: 0 };
+let resultadoSel = -1;
+
+/* Una peticion por tecla sobraria; 300 ms es donde ya se dejo de escribir pero todavia no
+   se percibe espera. En la tabla de leads el texto filtra la tabla directamente (la tabla
+   ES el resultado); desde cualquier otra vista se enseña un desplegable con los primeros. */
+function onBuscar() {
+  const q = textoBusqueda();
+  $('q-clr').hidden = !q;
+  $('search').classList.toggle('has-text', !!q);
+  clearTimeout(buscarTimer);
+  if (!q) {
+    ocultarResultados();
+    resultados = { q: '', items: [], total: 0 };
+    if (vistaActual() === 'leads') { page = 0; loadLeads(); } else renderRangeChip();
     return;
   }
-  chip.className = 'badge badge-blue range-chip';
-  if (!hayRango()) { chip.style.display = 'none'; return; }
-  chip.style.display = '';
-  chip.innerHTML = `${esc(textoRango())}<button onclick="limpiarRango()" title="Quitar filtro de fechas">✕</button>`;
+  buscarTimer = setTimeout(async () => {
+    if (vistaActual() === 'leads') { page = 0; loadLeads(); return; }
+    const data = await api('GET', '/leads?' + new URLSearchParams({ q, limit: 6, offset: 0 }));
+    if (!data || textoBusqueda() !== q) return;   // llego tarde: ya se escribio otra cosa
+    resultados = { q, items: data.items, total: data.total };
+    resultadoSel = -1;
+    renderResultados();
+  }, 300);
 }
 
-/* Lleva el rango, igual que la tarjeta del dashboard y la propia cola de etiquetado: las
+function renderResultados() {
+  const pop = $('search-results');
+  const { q, items, total } = resultados;
+  if (!q) { pop.hidden = true; return; }
+  if (!items.length) {
+    pop.innerHTML = `<div class="search-empty">Ningún lead coincide con «${esc(q)}»</div>`;
+  } else {
+    pop.innerHTML = items.map((l, i) => {
+      const nombre = nombreLead(l);
+      const sub = [l.company_name, l.email].filter(Boolean).join(' · ');
+      return `<button type="button" class="search-item" role="option" id="sr-${i}" aria-selected="${i === resultadoSel}"
+          onmousedown="event.preventDefault()" onclick="abrirResultado('${esc(l.lead_id)}')">
+        ${avatar(nombre, 'avatar-sm', l.lead_id)}
+        <span class="search-item-body"><span class="search-item-name">${nombre ? esc(nombre) : 'Sin nombre'}</span>
+          ${sub ? `<span class="search-item-sub">${esc(sub)}</span>` : ''}</span>
+        <code>+${esc(l.lead_id)}</code></button>`;
+    }).join('') + `<div class="search-foot"><button type="button" onmousedown="event.preventDefault()" onclick="verTodosResultados()">
+        Ver ${total > items.length ? `los ${total} resultados` : `${total === 1 ? 'el resultado' : 'los ' + total + ' resultados'}`} en la tabla</button></div>`;
+  }
+  pop.hidden = false;
+}
+
+function mostrarResultados() {
+  if (resultados.q && resultados.q === textoBusqueda() && vistaActual() !== 'leads') renderResultados();
+}
+function ocultarResultados() {
+  const pop = $('search-results');
+  if (pop) pop.hidden = true;
+}
+
+function onBuscarTecla(e) {
+  const pop = $('search-results');
+  const abierto = !pop.hidden && resultados.items.length;
+  if (e.key === 'Escape') { ocultarResultados(); e.target.blur(); return; }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    if (!abierto) return;
+    e.preventDefault();
+    const n = resultados.items.length;
+    resultadoSel = e.key === 'ArrowDown' ? (resultadoSel + 1) % n : (resultadoSel - 1 + n) % n;
+    pop.querySelectorAll('.search-item').forEach((b, i) => b.setAttribute('aria-selected', i === resultadoSel));
+    return;
+  }
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (abierto && resultadoSel >= 0) abrirResultado(resultados.items[resultadoSel].lead_id);
+    else if (textoBusqueda()) verTodosResultados();
+  }
+}
+
+function abrirResultado(leadId) {
+  ocultarResultados();
+  nav('detail', leadId);
+}
+
+function verTodosResultados() {
+  ocultarResultados();
+  page = 0;
+  if (vistaActual() !== 'leads') nav('leads'); else loadLeads();
+}
+
+function limpiarBusqueda() {
+  $('q-inp').value = '';
+  onBuscar();
+  $('q-inp').focus();
+}
+
+/* Lleva el rango, igual que la lista del dashboard y la propia cola de etiquetado: las
    tres cuentan lo mismo y tienen que decir el mismo numero. Antes esta pedia /stats sin
    rango, asi que la insignia se quedaba fija mientras la tarjeta encogia con la fecha. */
 async function refreshTagBadge() {
   const s = await api('GET', '/stats?' + aplicarRango(new URLSearchParams()));
   if (!s) return;
   const n = s.sin_etiquetas || 0;
-  const b = document.getElementById('tag-badge');
-  b.style.display = n ? '' : 'none';
+  const b = $('tag-badge');
+  b.hidden = !n;
   b.textContent = n;
 }
 
 /* ══════════ Leads ══════════ */
 function resetAndLoad() { page = 0; loadLeads(); }
 
+const FILTROS_EXTRA = [
+  { id: 'f-plan',      label: 'Plan',        opts: PLAN_ESTADOS.map(p => [p.v, p.l]) },
+  { id: 'f-seg',       label: 'Seguimiento', opts: SEG_FILTROS.map(s => [s.v, s.l]) },
+  { id: 'f-qualified', label: 'Calificado',  opts: [['true', 'Sí'], ['false', 'No']] },
+];
+
+/* Chip de filtro con un <select> nativo encima, invisible: se ve el chip y se usa el
+   desplegable del sistema, que ya funciona con teclado y en el celular. */
+function filtroChip(id, label, opts, cls = '', todos = 'Todos') {
+  return `<label class="filter ${cls}" data-label="${esc(label)}">
+      <span class="filter-label">${esc(label)}</span><span class="filter-value">${esc(todos)}</span>${ico('chevron-down', 'ico-sm')}
+      <select id="${id}" onchange="resetAndLoad()" aria-label="${esc(label)}">
+        ${todos ? `<option value="">${esc(todos)}</option>` : ''}
+        ${opts.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}
+      </select></label>`;
+}
+
 /* Los filtros de etiqueta se generan desde TAG_GROUPS: uno por grupo, de seleccion unica.
    Combinarlos filtra por interseccion ("Demo agendada" Y "Diego"), que es como se leen. */
 function renderTagFiltros() {
-  document.getElementById('tag-filtros').innerHTML = TAG_GROUPS.map(g => `
-    <label>${g.label}:</label>
-    <select id="f-tag-${g.key}" onchange="resetAndLoad()">
-      <option value="">Todos</option>
-      ${g.tags.map(t => `<option value="${t.v}">${esc(t.l)}</option>`).join('')}
-    </select>`).join('') + `
-    <label>Plan:</label>
-    <select id="f-plan" onchange="resetAndLoad()">
-      <option value="">Todos</option>
-      ${PLAN_ESTADOS.map(p => `<option value="${p.v}">${esc(p.l)}</option>`).join('')}
-    </select>
-    <label>Seguimiento:</label>
-    <select id="f-seg" onchange="resetAndLoad()">
-      <option value="">Todos</option>
-      ${SEG_FILTROS.map(s => `<option value="${s.v}">${esc(s.l)}</option>`).join('')}
-    </select>`;
+  $('tag-filtros').innerHTML =
+    TAG_GROUPS.map(g => filtroChip(`f-tag-${g.key}`, g.label, g.tags.map(t => [t.v, t.l]))).join('')
+    + FILTROS_EXTRA.map(f => filtroChip(f.id, f.label, f.opts)).join('')
+    // Orden: en escritorio se cambia desde la cabecera de la tabla; este chip solo se ve
+    // en el celular, donde la tabla no tiene cabecera.
+    + filtroChip('f-sort', 'Ordenar', [['recientes', 'Recientes'], ['score', 'Prob. conversión']], 'filter-sort', '');
 }
 
+/* Repinta el texto de cada chip, cuales estan activos, el boton «Limpiar filtros» y, en el
+   celular, la fila de filtros activos con su aspa. */
+function actualizarEstadoFiltros() {
+  let activos = 0;
+  const chips = [];
+  document.querySelectorAll('#tag-filtros .filter').forEach(f => {
+    const sel = f.querySelector('select');
+    const opt = sel.options[sel.selectedIndex];
+    f.querySelector('.filter-value').textContent = opt ? opt.text : '';
+    const esOrden = f.classList.contains('filter-sort');
+    const on = esOrden ? sel.value !== 'recientes' : !!sel.value;
+    f.classList.toggle('is-active', on);
+    if (on && !esOrden) { activos++; chips.push({ id: sel.id, label: f.dataset.label, text: opt.text }); }
+  });
+  $('clear-filters').hidden = !activos;
+  $('filters-btn-txt').textContent = activos ? `Filtros (${activos})` : 'Filtros';
+  $('active-chips').innerHTML = chips.map(c => `<span class="chip is-active"><span class="chip-main">${esc(c.label)}: ${esc(c.text)}</span>
+      <button type="button" class="chip-x" aria-label="Quitar filtro ${esc(c.label)}" onclick="quitarFiltro('${c.id}')">${ico('close', 'ico-sm')}</button></span>`).join('');
+  pintarOrden();
+  return activos;
+}
+
+function quitarFiltro(id) { $(id).value = ''; resetAndLoad(); }
+
+function limpiarFiltrosLeads() {
+  document.querySelectorAll('#tag-filtros select').forEach(s => { s.value = s.id === 'f-sort' ? 'recientes' : ''; });
+  resetAndLoad();
+}
+
+/* Vacia buscador, filtros y periodo de una vez, con una sola recarga. */
+function limpiarTodoLeads() {
+  $('q-inp').value = '';
+  $('q-clr').hidden = true;
+  $('search').classList.remove('has-text');
+  document.querySelectorAll('#tag-filtros select').forEach(s => { s.value = s.id === 'f-sort' ? 'recientes' : ''; });
+  if (hayRango()) limpiarRango(); else resetAndLoad();
+}
+
+function abrirFiltros() { $('filters').classList.add('open'); }
+function cerrarFiltros() { const f = $('filters'); if (f) f.classList.remove('open'); }
+
 function tagsFiltro() {
-  return TAG_GROUPS.map(g => document.getElementById(`f-tag-${g.key}`).value).filter(Boolean);
+  return TAG_GROUPS.map(g => $(`f-tag-${g.key}`).value).filter(Boolean);
 }
 
 /* Los filtros que la barra tiene puestos ahora mismo, sin paginacion.
@@ -806,10 +1161,10 @@ function tagsFiltro() {
 function paramsLeads() {
   const params = new URLSearchParams();
   const tags = tagsFiltro();
-  const qual = document.getElementById('f-qualified').value;
-  const sort = document.getElementById('f-sort').value;
-  const plan = document.getElementById('f-plan').value;
-  const seg  = document.getElementById('f-seg').value;
+  const qual = $('f-qualified').value;
+  const sort = $('f-sort').value;
+  const plan = $('f-plan').value;
+  const seg  = $('f-seg').value;
   const q    = textoBusqueda();
   if (tags.length) params.set('tags', tags.join(','));
   if (plan)    params.set('plan_estado', plan);
@@ -823,10 +1178,26 @@ function paramsLeads() {
   return params;
 }
 
+/* Orden desde la cabecera de la tabla. Escribe en el mismo <select> que usa el celular,
+   asi paramsLeads() sigue teniendo una sola fuente. */
+function ordenarPor(sort) {
+  $('f-sort').value = sort;
+  resetAndLoad();
+}
+function pintarOrden() {
+  const s = $('f-sort').value;
+  document.querySelectorAll('.leads-table th.sortable').forEach(th => {
+    const on = th.dataset.sort === s;
+    th.setAttribute('aria-sort', on ? 'descending' : 'none');
+    th.querySelector('use').setAttribute('href', on ? '#i-sort-desc' : '#i-sort');
+  });
+}
+
 async function exportarCSV(btn) {
-  const etiqueta = btn.textContent;
+  const lbl = btn.querySelector('span') || btn;
+  const etiqueta = lbl.textContent;
   btn.disabled = true;
-  btn.textContent = 'Preparando…';
+  lbl.textContent = 'Preparando…';
   try {
     // No pasa por api(): esa hace res.json() y aqui llega un fichero. Y tampoco puede ser
     // un <a href> normal, porque una descarga del navegador no lleva la cabecera
@@ -850,39 +1221,61 @@ async function exportarCSV(btn) {
     a.remove();
     URL.revokeObjectURL(url);
   } catch (e) {
-    alert('No se pudo exportar: ' + e.message);
+    toast('No se pudo exportar: ' + e.message, 'crit', 6000);
   } finally {
     btn.disabled = false;
-    btn.textContent = etiqueta;
+    lbl.textContent = etiqueta;
   }
 }
+
+/* Cada carga lleva su numero: si se cambian dos filtros seguidos, la respuesta lenta del
+   primero no puede pisar la del segundo. */
+let leadsReq = 0;
 
 async function loadLeads() {
   const params = paramsLeads();
   params.set('limit', PAGE);
   params.set('offset', page * PAGE);
 
+  actualizarEstadoFiltros();
   renderRangeChip();
+  const card = $('table-card');
+  const tb = $('tbody');
+  // Esqueleto solo la primera vez; si ya hay filas, se atenuan hasta que llegue la nueva
+  // pagina, que es menos brusco que vaciar la tabla.
+  if (!tb.querySelector('tr[data-id]')) tb.innerHTML = skeletonRows(6);
+  else card.classList.add('is-loading');
+
+  const req = ++leadsReq;
   const data = await api('GET', '/leads?' + params);
+  if (req !== leadsReq) return;
+  card.classList.remove('is-loading');
   if (!data) return;
 
-  document.getElementById('count-badge').textContent = `${data.total} lead${data.total !== 1 ? 's' : ''}`;
+  $('count-badge').textContent = `${data.total} lead${data.total !== 1 ? 's' : ''}`;
   renderRows(data.items);
   renderPages(data.total);
 }
 
+function skeletonRows(n) {
+  const anchos = [70, 40, 55, 60, 65, 50, 45, 30];
+  return Array(n).fill(0).map(() => `<tr class="sk-row">${anchos.map((w, i) => `<td${i === 0 ? ' class="col-lead"' : ''}><span class="skeleton sk-line" style="width:${w}%"></span></td>`).join('')}</tr>`).join('');
+}
+
 function probCell(l) {
   const prob = (l.conversion_prob != null) ? Math.round(l.conversion_prob * 100) : null;
-  if (prob != null) {
-    return `<div class="score-wrap">
-        <div class="score-bar"><div class="score-fill" style="width:${prob}%;background:${probColor(prob)}"></div></div>
-        <span class="score-text">${prob}%</span>
-      </div>`;
-  }
+  if (prob != null) return scoreRing(prob, 32);
   if (l.has_transcript) {
-    return `<button class="btn-sm" onclick="event.stopPropagation();scoreLead('${esc(l.lead_id)}', this)">Calcular</button>`;
+    return `<button type="button" class="btn btn-secondary btn-sm" onclick="event.stopPropagation();scoreLead('${esc(l.lead_id)}', this)">Calcular</button>`;
   }
   return `<span class="cell-muted" title="Sin conversación suficiente para puntuar">—</span>`;
+}
+
+function estadoCell(l) {
+  return `<div class="estado-cell">
+      ${l.tipo_lead ? `<span class="badge badge-blue">${esc(l.tipo_lead)}</span>` : '<span class="cell-muted">—</span>'}
+      <span class="estado-q${l.qualified ? ' si' : ''}">${l.qualified ? ico('check') + 'Calificado' : 'Sin calificar'}</span>
+    </div>`;
 }
 
 /* Celda de seguimiento: la accion y cuanto le queda. El color es el que hace que un
@@ -898,36 +1291,54 @@ function segCell(l) {
   }
   return `<div class="cell-sp">
       <div class="t" title="${esc(l.siguiente_paso)}">${esc(l.siguiente_paso)}</div>
-      <div class="f"><span class="badge ${cls}">${esc(txt)}</span></div>
+      <div class="f"><span class="badge with-dot ${cls}">${esc(txt)}</span></div>
     </div>`;
 }
 
+function emptyLeads() {
+  const q = textoBusqueda();
+  const hayFiltros = document.querySelectorAll('#tag-filtros .filter.is-active:not(.filter-sort)').length > 0;
+  const frase = q
+    ? `Ningún lead coincide con «${esc(q)}».`
+    : hayRango() ? `Sin leads entre ${esc(textoRango())}${hayFiltros ? ' con estos filtros' : ''}.`
+    : hayFiltros ? 'Sin leads con estos filtros.' : 'Todavía no hay leads.';
+  return `<div class="empty">${ico('inbox')}<p>${frase}</p>
+    ${(q || hayRango() || hayFiltros) ? '<button type="button" class="btn btn-secondary btn-sm" onclick="limpiarTodoLeads()">Ver todos los leads</button>' : ''}</div>`;
+}
+
 function renderRows(leads) {
-  const tb = document.getElementById('tbody');
+  const tb = $('tbody');
   if (!leads.length) {
-    tb.innerHTML = '<tr class="empty-row"><td colspan="12">Sin leads para mostrar</td></tr>';
+    tb.innerHTML = `<tr class="empty-row"><td colspan="8">${emptyLeads()}</td></tr>`;
     return;
   }
   tb.innerHTML = leads.map(l => {
     const id = esc(l.lead_id);
-    return `<tr onclick="nav('detail','${id}')">
-      <td><code style="font-size:12px;color:var(--gray-600)">+${id}</code></td>
-      <td>${l.contact_name ? esc(l.contact_name) : '<span class="cell-muted">—</span>'}</td>
-      <td>${l.company_name ? esc(l.company_name) : '<span class="cell-muted">—</span>'}</td>
-      <td>${l.email ? `<div class="cell-email" title="${esc(l.email)}">${esc(l.email)}</div>` : '<span class="cell-muted">—</span>'}</td>
-      <td>${probCell(l)}</td>
-      <td>${l.tipo_lead ? `<span class="badge badge-blue">${esc(l.tipo_lead)}</span>` : '<span class="cell-muted">—</span>'}</td>
-      <td>${l.qualified ? '<span class="badge badge-green">Sí</span>' : '<span class="badge badge-gray">No</span>'}</td>
-      <td>${planCell(l)}</td>
-      <td onclick="event.stopPropagation()">
+    const nombre = nombreLead(l);
+    const sub = [l.company_name, l.email].filter(Boolean).map(esc).join(' · ');
+    return `<tr data-id="${id}" tabindex="0" onclick="nav('detail','${id}')"
+                onkeydown="if(event.key==='Enter'&&event.target===this)nav('detail','${id}')">
+      <td class="col-lead"><div class="cell-lead">${avatar(nombre, '', l.lead_id)}
+        <div class="cell-lead-body">
+          <div class="lead-name${nombre ? '' : ' is-empty'}">${nombre ? esc(nombre) : 'Sin nombre'}</div>
+          ${sub ? `<div class="lead-sub" title="${sub}">${sub}</div>` : ''}
+          <div class="lead-tel">+${id}</div>
+        </div></div></td>
+      <td data-label="Score">${probCell(l)}</td>
+      <td data-label="Estado">${estadoCell(l)}</td>
+      <td data-label="Plan">${planCell(l)}</td>
+      <td data-label="Etiquetas" onclick="event.stopPropagation()">
         <div class="tag-cell" id="tc-${id}">
           <span class="tag-badges">${tagBadges(tagsOf(l))}</span>
-          <button class="btn-tag-add" title="Editar etiquetas" onclick="toggleTagPop('${id}', this)">+</button>
+          <button type="button" class="btn-tag-add" title="Editar etiquetas" aria-label="Editar etiquetas" onclick="toggleTagPop('${id}', this)">${ico('plus')}</button>
         </div>
       </td>
-      <td>${segCell(l)}</td>
-      <td class="cell-muted">${fmtDate(l.captured_at)}</td>
-      <td><button class="btn-brief" onclick="event.stopPropagation();showBrief('${id}')">Brief</button></td>
+      <td data-label="Seguimiento">${segCell(l)}</td>
+      <td data-label="Fecha" class="col-fecha cell-muted" title="${esc(fmtFechaHora(l.captured_at))}">${fmtDate(l.captured_at)}</td>
+      <td class="col-acciones"><div class="row-actions">
+        <button type="button" class="btn-icon" title="Brief de venta" aria-label="Brief de venta" onclick="event.stopPropagation();showBrief('${id}')">${ico('file')}<span class="btn-txt">Brief</span></button>
+        <button type="button" class="btn-icon" title="Abrir el lead" aria-label="Abrir el lead" onclick="event.stopPropagation();nav('detail','${id}')">${ico('chevron-right')}<span class="btn-txt">Abrir</span></button>
+      </div></td>
     </tr>`;
   }).join('');
 }
@@ -950,7 +1361,7 @@ function sortTags(tags) {
   return TAG_ORDER.filter(v => tags.includes(v));
 }
 
-/* Badge del estado comercial. Debajo va la fecha de vencimiento, que es la que da el
+/* Pill del estado comercial. Debajo va la fecha de vencimiento, que es la que da el
    matiz: "Ex-cliente" no dice lo mismo si se fue hace un mes que hace dos años. */
 function planCell(l) {
   if (!l.plan_estado) return '<span class="cell-muted" title="Aún no se ha sincronizado">—</span>';
@@ -960,7 +1371,7 @@ function planCell(l) {
     ? ''
     : `<div class="plan-sub">${l.plan_expira ? 'vence ' + fmtDate(l.plan_expira) : ''}` +
       `${l.plan_pagos ? ` · ${l.plan_pagos} pago${l.plan_pagos !== 1 ? 's' : ''}` : ''}</div>`;
-  return `<span class="badge badge-${cls}" title="${esc(l.plan_nombre || '')}">${esc(txt)}</span>${pie}`;
+  return `<span class="badge with-dot badge-${cls}" title="${esc(l.plan_nombre || '')}">${esc(txt)}</span>${pie}`;
 }
 
 function tagBadges(tags) {
@@ -976,7 +1387,7 @@ function tagPicker(leadId, tags, ctx) {
     <div class="tag-group-title">${g.label}</div>
     <div class="tag-btns">${g.tags.map(t => {
       const sel = tags.includes(t.v) ? ` sel-${t.c}` : '';
-      return `<button class="btn-tag${sel}" data-tag="${t.v}" onclick="toggleTag('${id}','${t.v}','${ctx}',this)">${esc(t.l)}</button>`;
+      return `<button type="button" class="btn-tag${sel}" data-tag="${t.v}" aria-pressed="${tags.includes(t.v)}" onclick="toggleTag('${id}','${t.v}','${ctx}',this)">${esc(t.l)}</button>`;
     }).join('')}</div>`).join('') + `</div>`;
 }
 
@@ -992,7 +1403,10 @@ async function toggleTag(leadId, tag, ctx, btn) {
 
 async function saveTags(leadId, tags, ctx) {
   const res = await api('PATCH', `/leads/${leadId}/outcome`, { tags: sortTags(tags) });
-  if (!res || !res.ok) return;   // sin confirmacion del servidor no se refresca nada
+  if (!res || !res.ok) {
+    if (res && res.detail) toast('No se pudo guardar la etiqueta: ' + res.detail, 'crit');
+    return;   // sin confirmacion del servidor no se refresca nada
+  }
   tagsCache[leadId] = res.tags;
   refreshTagBadge();
   // Tabla y cola de etiquetado se repintan en sitio en vez de recargarse: lo normal es
@@ -1000,12 +1414,17 @@ async function saveTags(leadId, tags, ctx) {
   // lead de la cola (etiquetado, que lista justo los que no tienen ninguna). La cola se
   // refresca de verdad al elegir otro lead. El detalle si se recarga: no desaparece.
   if (ctx === 'leads') {
-    const celda = document.getElementById(`tc-${leadId}`);
+    const celda = $(`tc-${leadId}`);
     if (celda) celda.querySelector('.tag-badges').innerHTML = tagBadges(res.tags);
     // El picker cuelga del <body>, no de la celda, y solo hay uno abierto: el de este lead.
     repintarBotonesTag(document.querySelector('.tag-pop'), res.tags);
   }
-  if (ctx === 'tag')    repintarBotonesTag(document.getElementById('tag-panel'), res.tags);
+  if (ctx === 'tag') {
+    repintarBotonesTag($('tag-panel'), res.tags);
+    // Ya hay un resultado marcado: el siguiente paso natural es pasar al siguiente lead.
+    const next = $('tag-next');
+    if (next && res.tags.some(t => TAG_GROUP[t] === 'estado')) next.classList.replace('btn-secondary', 'btn-primary');
+  }
   if (ctx === 'detail') loadDetail(leadId);
 }
 
@@ -1015,29 +1434,37 @@ function repintarBotonesTag(root, tags) {
   root.querySelectorAll('.btn-tag').forEach(b => {
     const v = b.dataset.tag;
     b.className = 'btn-tag' + (tags.includes(v) ? ` sel-${TAG_CLASS[v]}` : '');
+    b.setAttribute('aria-pressed', tags.includes(v));
   });
 }
 
 /* Popover de la celda de la tabla. Solo puede haber uno abierto a la vez; el boton que lo
-   abrio queda marcado para que un segundo clic lo cierre en vez de reabrirlo. */
-const POP_W = 300, POP_MARGIN = 8;
+   abrio queda marcado para que un segundo clic lo cierre en vez de reabrirlo. En el celular
+   se convierte en hoja inferior (lo decide el CSS; aqui solo se le pone cabecera). */
+const POP_W = 320, POP_MARGIN = 8;
 function toggleTagPop(leadId, btn) {
   const yaAbierto = btn.dataset.pop === '1';
   cerrarTagPops();
+  cerrarPeriodo();
   if (yaAbierto) return;
 
+  const hoja = window.matchMedia('(max-width: 599px)').matches;
   const pop = document.createElement('div');
-  pop.className = 'tag-pop';
-  pop.innerHTML = tagPicker(leadId, tagsCache[leadId] || [], 'leads');
+  pop.className = 'pop tag-pop';
+  pop.innerHTML = (hoja
+    ? `<div class="sheet-head"><span class="sheet-title">Etiquetas</span><button type="button" class="btn-icon" onclick="cerrarTagPops()" aria-label="Cerrar">${ico('close')}</button></div>`
+    : '') + tagPicker(leadId, tagsCache[leadId] || [], 'leads');
   pop.onclick = e => e.stopPropagation();   // los clics del picker no deben cerrarlo
   document.body.appendChild(pop);
 
-  // Se ancla al boton y se mete dentro de la ventana; si no cabe abajo, se abre arriba.
-  const r = btn.getBoundingClientRect();
-  const alto = pop.offsetHeight;
-  const cabeAbajo = r.bottom + POP_MARGIN + alto <= window.innerHeight;
-  pop.style.left = `${Math.max(POP_MARGIN, Math.min(r.left, window.innerWidth - POP_W - POP_MARGIN))}px`;
-  pop.style.top = `${cabeAbajo ? r.bottom + POP_MARGIN : Math.max(POP_MARGIN, r.top - POP_MARGIN - alto)}px`;
+  if (!hoja) {
+    // Se ancla al boton y se mete dentro de la ventana; si no cabe abajo, se abre arriba.
+    const r = btn.getBoundingClientRect();
+    const alto = pop.offsetHeight;
+    const cabeAbajo = r.bottom + POP_MARGIN + alto <= window.innerHeight;
+    pop.style.left = `${Math.max(POP_MARGIN, Math.min(r.left, window.innerWidth - POP_W - POP_MARGIN))}px`;
+    pop.style.top = `${cabeAbajo ? r.bottom + POP_MARGIN : Math.max(POP_MARGIN, r.top - POP_MARGIN - alto)}px`;
+  }
   btn.dataset.pop = '1';
 }
 
@@ -1045,28 +1472,26 @@ function cerrarTagPops() {
   document.querySelectorAll('.tag-pop').forEach(p => p.remove());
   document.querySelectorAll('.btn-tag-add[data-pop]').forEach(b => delete b.dataset.pop);
 }
-// Clic fuera o scroll cierran el popover: al estar en position:fixed no sigue a su fila.
-document.addEventListener('click', cerrarTagPops);
-window.addEventListener('scroll', cerrarTagPops, true);
 
 function renderPages(total) {
   const pages = Math.ceil(total / PAGE);
-  const el = document.getElementById('pagination');
+  const el = $('pagination');
   if (pages <= 1) { el.innerHTML = ''; return; }
-  let h = `<button class="btn-page" onclick="goPage(${page-1})" ${page===0?'disabled':''}>← Ant.</button>`;
+  const ini = page * PAGE + 1, fin = Math.min(total, (page + 1) * PAGE);
+  let h = `<button type="button" class="btn-page" onclick="goPage(${page - 1})" ${page === 0 ? 'disabled' : ''} aria-label="Página anterior">${ico('arrow-left', 'ico-sm')}</button>`;
   const start = Math.max(0, page - 2), end = Math.min(pages, start + 5);
   for (let i = start; i < end; i++)
-    h += `<button class="btn-page${i===page?' active':''}" onclick="goPage(${i})">${i+1}</button>`;
-  h += `<button class="btn-page" onclick="goPage(${page+1})" ${page>=pages-1?'disabled':''}>Sig. →</button>`;
-  el.innerHTML = h;
+    h += `<button type="button" class="btn-page${i === page ? ' active' : ''}" onclick="goPage(${i})" ${i === page ? 'aria-current="page"' : ''}>${i + 1}</button>`;
+  h += `<button type="button" class="btn-page" onclick="goPage(${page + 1})" ${page >= pages - 1 ? 'disabled' : ''} aria-label="Página siguiente">${ico('arrow-right', 'ico-sm')}</button>`;
+  el.innerHTML = `<span class="count">${ini}–${fin} de ${total}</span><div class="pages">${h}</div>`;
 }
 
-function goPage(p) { page = p; loadLeads(); window.scrollTo(0, 0); }
-
-function probColor(pct) {
-  if (pct >= 60) return 'var(--green)';
-  if (pct >= 30) return 'var(--amber)';
-  return 'var(--gray-400)';
+function goPage(p) {
+  page = p;
+  loadLeads();
+  $('table-wrap').scrollTop = 0;
+  $('main').scrollTop = 0;
+  window.scrollTo(0, 0);
 }
 
 async function scoreLead(leadId, btn) {
@@ -1097,7 +1522,7 @@ function parseTranscript(t) {
 }
 
 function renderTranscript(t) {
-  if (!t) return '<div class="empty-box">Sin transcript disponible.</div>';
+  if (!t) return `<div class="empty">${ico('message')}<p>Sin conversación disponible.</p></div>`;
   const msgs = parseTranscript(t);
   if (!msgs.length) return `<div class="transcript"><div class="msg msg-ai">${esc(t)}</div></div>`;
   return `<div class="transcript">${msgs.map(m =>
@@ -1114,19 +1539,32 @@ const DETAIL_FIELDS = [
   ['ticket_estimado', 'Ticket estimado'], ['message_count', 'N° mensajes'],
 ];
 
+async function copiarTexto(texto, aviso) {
+  try {
+    await navigator.clipboard.writeText(texto);
+    toast(aviso || 'Copiado', 'ok', 2500);
+  } catch (e) {
+    $('copiar-texto').value = texto;
+    abrirModal('copiar-overlay');
+    $('copiar-texto').select();
+  }
+}
+
 async function loadDetail(leadId) {
   if (!leadId) { nav('leads'); return; }
   currentLeadId = leadId;
-  const el = document.getElementById('detail-content');
-  el.innerHTML = '<div class="empty-box"><span class="spinner"></span>Cargando…</div>';
+  const el = $('detail-content');
+  el.innerHTML = '<div class="loading"><span class="spinner"></span>Cargando…</div>';
   const [l, notas, hitos] = await Promise.all([
     api('GET', `/leads/${leadId}`),
     api('GET', `/leads/${leadId}/notas`),
     api('GET', `/leads/${leadId}/eventos`),
   ]);
   if (!l) return;
-  if (l.detail) { el.innerHTML = `<div class="empty-box">${esc(l.detail)}</div>`; return; }
+  if (l.detail) { el.innerHTML = `<div class="empty">${ico('alert')}<p>${esc(l.detail)}</p><a class="btn btn-secondary btn-sm" href="#leads">Volver a leads</a></div>`; return; }
 
+  const id = esc(l.lead_id);
+  const nombre = nombreLead(l);
   const prob = (l.conversion_prob != null) ? Math.round(l.conversion_prob * 100) : null;
   const modulos = (l.modulos_interes || []).map(m => `<span class="badge badge-blue">${esc(m)}</span>`).join(' ') || '—';
   const fields = DETAIL_FIELDS
@@ -1135,39 +1573,49 @@ async function loadDetail(leadId) {
     .join('');
 
   el.innerHTML = `
-    <div class="page-title">${esc(l.contact_name || l.wa_display_name || '+' + l.lead_id)}</div>
-    <div class="page-sub">
-      <code>+${esc(l.lead_id)}</code> · capturado ${fmtDate(l.captured_at)} ·
-      ${l.qualified ? '<span class="badge badge-green">Calificado</span>' : '<span class="badge badge-gray">No calificado</span>'}
-      ${tagBadges(tagsOf(l))}
+    <div class="crumbs"><a href="#leads">Leads</a>${ico('chevron-right')}<span>${esc(nombre || '+' + l.lead_id)}</span></div>
+    <div class="card detail-head">
+      <div class="detail-id">${avatar(nombre, 'avatar-lg', l.lead_id)}
+        <div>
+          <h2>${nombre ? esc(nombre) : 'Sin nombre'}</h2>
+          <div class="detail-meta">
+            <code>+${id}</code>
+            <button type="button" class="btn-icon btn-xs" title="Copiar teléfono" aria-label="Copiar teléfono" onclick="copiarTexto('+${id}', 'Teléfono copiado')">${ico('copy', 'ico-sm')}</button>
+            ${l.company_name ? `<span>· ${esc(l.company_name)}</span>` : ''}
+            <span>· capturado ${fmtDate(l.captured_at)}</span>
+          </div>
+          <div class="detail-badges">
+            ${l.qualified ? '<span class="badge badge-green">Calificado</span>' : '<span class="badge badge-gray">No calificado</span>'}
+            ${tagBadges(tagsOf(l)).replace('<span class="cell-muted">—</span>', '')}
+          </div>
+        </div>
+      </div>
+      <div class="detail-score">${prob != null
+        ? scoreRing(prob, 64) + '<span class="hint">probabilidad de conversión</span>'
+        : (l.transcript
+          ? `<button type="button" class="btn btn-secondary btn-sm" onclick="scoreDetail('${id}', this)">Calcular score</button>`
+          : '<span class="hint">Sin conversación suficiente para puntuar</span>')}</div>
+      <div class="detail-actions">
+        <button type="button" class="btn btn-primary btn-sm" onclick="showBrief('${id}')">${ico('file', 'ico-sm')}Generar brief</button>
+      </div>
     </div>
     <div class="detail-grid">
-      <div>
-        <div class="panel">
-          <div class="panel-title">Probabilidad de conversión</div>
-          ${prob != null ? `
-            <div class="score-wrap" style="gap:10px">
-              <div class="score-bar" style="width:120px;height:8px"><div class="score-fill" style="width:${prob}%;background:${probColor(prob)}"></div></div>
-              <b style="font-size:20px">${prob}%</b>
-            </div>` : (l.transcript
-              ? `<button class="btn-brief" onclick="scoreDetail('${esc(l.lead_id)}', this)">Calcular score</button>`
-              : `<span class="cell-muted">Sin conversación suficiente para puntuar.</span>`)}
+      <div class="detail-col">
+        <div class="panel panel-first">
+          <div class="panel-title">Siguiente paso</div>
+          ${siguientePasoForm(l)}
+        </div>
+        <div class="panel panel-first">
+          <div class="panel-title">Etiquetas</div>
+          ${tagPicker(l.lead_id, tagsOf(l), 'detail')}
         </div>
         <div class="panel">
           <div class="panel-title">Plan en MAU Comunica</div>
           ${planPanel(l)}
         </div>
         <div class="panel">
-          <div class="panel-title">Etiquetas</div>
-          ${tagPicker(l.lead_id, tagsOf(l), 'detail')}
-        </div>
-        <div class="panel">
           <div class="panel-title">Fechas del embudo</div>
           ${hitosPanel(l.lead_id, hitos)}
-        </div>
-        <div class="panel">
-          <div class="panel-title">Siguiente paso</div>
-          ${siguientePasoForm(l)}
         </div>
         <div class="panel">
           <div class="panel-title">Notas</div>
@@ -1178,13 +1626,9 @@ async function loadDetail(leadId) {
           ${fields || '<span class="cell-muted">Sin datos extraídos.</span>'}
           <div class="field"><b>Módulos de interés</b><span>${modulos}</span></div>
         </div>
-        <div class="panel">
-          <div class="panel-title">Brief <button class="btn-brief" onclick="showBrief('${esc(l.lead_id)}')">Generar documento</button></div>
-          <span class="cell-muted" style="font-size:13px">Genera el brief de venta estructurado, listo para exportar a PDF.</span>
-        </div>
       </div>
-      <div class="panel">
-        <div class="panel-title">Conversación</div>
+      <div class="panel conv-panel">
+        <div class="panel-title">Conversación${l.message_count ? `<span class="hint">${l.message_count} mensajes</span>` : ''}</div>
         ${renderTranscript(l.transcript)}
       </div>
     </div>`;
@@ -1199,10 +1643,10 @@ function siguientePasoForm(l) {
   let estado = '';
   if (l.siguiente_paso && d != null) {
     estado = d > 0
-      ? `<span class="badge badge-red">Vencido hace ${d} día${d !== 1 ? 's' : ''}</span>`
+      ? `<span class="badge with-dot badge-red">Vencido hace ${d} día${d !== 1 ? 's' : ''}</span>`
       : d === 0
-        ? '<span class="badge badge-amber">Vence hoy</span>'
-        : `<span class="badge badge-gray">Faltan ${-d} día${d !== -1 ? 's' : ''}</span>`;
+        ? '<span class="badge with-dot badge-amber">Vence hoy</span>'
+        : `<span class="badge with-dot badge-gray">Faltan ${-d} día${d !== -1 ? 's' : ''}</span>`;
   }
   const firma = l.siguiente_paso_autor
     ? `<div class="hint">Definido por <b>${esc(cap(l.siguiente_paso_autor))}</b> el ${esc(fmtFechaHora(l.siguiente_paso_at))}</div>`
@@ -1210,30 +1654,34 @@ function siguientePasoForm(l) {
   const id = esc(l.lead_id);
   return `<div class="sp-form">
       <input type="text" id="sp-texto" maxlength="140" value="${esc(l.siguiente_paso || '')}"
-             placeholder="Ej.: llamar para cerrar la cotización">
+             placeholder="Ej.: llamar para cerrar la cotización" aria-label="Siguiente paso">
       <div class="row">
-        <input type="date" id="sp-fecha" value="${esc(l.siguiente_paso_fecha || '')}">
-        <button class="btn-brief" onclick="guardarSiguientePaso('${id}', this)">Guardar</button>
-        ${l.siguiente_paso ? `<button class="btn-sm" onclick="limpiarSiguientePaso('${id}', this)">Quitar</button>` : ''}
+        <input type="date" id="sp-fecha" value="${esc(l.siguiente_paso_fecha || '')}" aria-label="Fecha del siguiente paso">
+        <button type="button" class="btn btn-primary btn-sm" onclick="guardarSiguientePaso('${id}', this)">Guardar</button>
+        ${l.siguiente_paso ? `<button type="button" class="btn btn-ghost btn-sm" onclick="limpiarSiguientePaso('${id}', this)">Quitar</button>` : ''}
       </div>
-      ${estado}${firma}
+      <div class="field-error" id="sp-err" hidden></div>
+      ${estado ? `<div>${estado}</div>` : ''}${firma}
       <div class="hint">Una acción concreta con fecha, no un resumen. El porqué va en las notas.</div>
     </div>`;
 }
 
 async function guardarSiguientePaso(leadId, btn) {
-  const texto = document.getElementById('sp-texto').value.trim();
-  const fecha = document.getElementById('sp-fecha').value;
+  const texto = $('sp-texto').value.trim();
+  const fecha = $('sp-fecha').value;
+  const err = $('sp-err');
   if (texto && !fecha) {
-    alert('Ponle fecha: sin fecha el siguiente paso no puede vencer, y no aparecerá en la vista de vencidos.');
-    document.getElementById('sp-fecha').focus();
+    err.innerHTML = `${ico('alert', 'ico-sm')}Ponle fecha: sin fecha el siguiente paso no puede vencer y no aparecerá entre los vencidos.`;
+    err.hidden = false;
+    $('sp-fecha').focus();
     return;
   }
+  err.hidden = true;
   btn.disabled = true; btn.textContent = 'Guardando…';
   const r = await api('PATCH', `/leads/${leadId}/siguiente-paso`, { texto, fecha: fecha || null });
-  if (r && r.ok) { loadDetail(leadId); return; }
+  if (r && r.ok) { toast('Siguiente paso guardado', 'ok', 2500); loadDetail(leadId); return; }
   btn.disabled = false; btn.textContent = 'Guardar';
-  if (r && r.detail) alert(r.detail);
+  if (r && r.detail) toast(r.detail, 'crit');
 }
 
 async function limpiarSiguientePaso(leadId, btn) {
@@ -1241,7 +1689,7 @@ async function limpiarSiguientePaso(leadId, btn) {
   const r = await api('PATCH', `/leads/${leadId}/siguiente-paso`, { texto: '', fecha: null });
   if (r && r.ok) { loadDetail(leadId); return; }
   btn.disabled = false; btn.textContent = 'Quitar';
-  if (r && r.detail) alert(r.detail);
+  if (r && r.detail) toast(r.detail, 'crit');
 }
 
 /* ══════════ Fechas del embudo ══════════ */
@@ -1253,13 +1701,13 @@ async function limpiarSiguientePaso(leadId, btn) {
 function hitosPanel(leadId, hitos) {
   const items = (hitos && hitos.eventos) || [];
   if (!items.length) {
-    return '<span class="cell-muted" style="font-size:13px">Sin hitos todavía. Marca una etiqueta de estado y se fechará sola.</span>';
+    return '<span class="hint">Sin hitos todavía. Marca una etiqueta de estado y se fechará sola.</span>';
   }
   const id = esc(leadId);
   return `<div class="hito-list">${items.map(h => `
       <div class="hito">
         <span class="badge badge-${TAG_CLASS[h.evento] || 'gray'}">${esc(TAG_LABEL[h.evento] || h.evento)}</span>
-        <input type="date" id="hito-${esc(h.evento)}" value="${esc(h.fecha || '')}"
+        <input type="date" id="hito-${esc(h.evento)}" value="${esc(h.fecha || '')}" aria-label="Fecha de ${esc(TAG_LABEL[h.evento] || h.evento)}"
                onchange="guardarHito('${id}', '${esc(h.evento)}', this)">
         ${h.autor === 'migracion'
           ? '<span class="hint">fecha estimada</span>'
@@ -1274,8 +1722,10 @@ async function guardarHito(leadId, evento, input) {
   const r = await api('PATCH', `/leads/${leadId}/eventos/${evento}`, { fecha: input.value });
   input.disabled = false;
   if (!r || r.detail) {
-    alert('No se pudo mover la fecha: ' + ((r && r.detail) || 'error de conexión'));
+    toast('No se pudo mover la fecha: ' + ((r && r.detail) || 'error de conexión'), 'crit');
     loadDetail(leadId);                   // se recarga para no dejar en pantalla un valor falso
+  } else {
+    toast('Fecha del hito actualizada', 'ok', 2500);
   }
 }
 
@@ -1284,10 +1734,10 @@ function notasPanel(leadId, notas) {
   const items = (notas && notas.items) || [];
   const id = esc(leadId);
   return `<div class="nota-form">
-      <textarea id="nota-texto" maxlength="2000"
+      <textarea id="nota-texto" maxlength="2000" aria-label="Nueva nota"
         placeholder="Por qué está donde está: qué pasó en la última conversación, qué dijo, qué lo frena."></textarea>
-      <div style="display:flex;gap:10px;align-items:center;margin-top:8px">
-        <button class="btn-brief" onclick="guardarNota('${id}', this)">Añadir nota</button>
+      <div class="row" style="margin-top:8px">
+        <button type="button" class="btn btn-primary btn-sm" onclick="guardarNota('${id}', this)">Añadir nota</button>
         <span class="hint">Se firma sola con tu usuario y la fecha.</span>
       </div>
     </div>
@@ -1299,27 +1749,26 @@ function notasPanel(leadId, notas) {
 }
 
 async function guardarNota(leadId, btn) {
-  const ta = document.getElementById('nota-texto');
+  const ta = $('nota-texto');
   const texto = ta.value.trim();
   if (!texto) { ta.focus(); return; }
   btn.disabled = true; btn.textContent = 'Guardando…';
   const r = await api('POST', `/leads/${leadId}/notas`, { texto });
   if (r && r.id) { loadDetail(leadId); return; }   // se repinta con la nota ya firmada
   btn.disabled = false; btn.textContent = 'Añadir nota';
-  if (r && r.detail) alert(r.detail);
+  if (r && r.detail) toast(r.detail, 'crit');
 }
 
 /* Ficha del plan en el detalle. Es solo lectura: lo escribe el sync, no el vendedor. */
 function planPanel(l) {
   if (!l.plan_estado) {
-    return '<span class="cell-muted">Sin sincronizar. Usa «Sincronizar planes» en el dashboard.</span>';
+    return '<span class="hint">Sin sincronizar. Usa «Sincronizar planes» en el dashboard.</span>';
   }
   if (l.plan_estado === 'sin_cuenta') {
-    return '<span class="cell-muted">Este lead no tiene cuenta en MAU Comunica'
-         + ' (no cruzó por teléfono ni por correo).</span>';
+    return '<span class="hint">Este lead no tiene cuenta en MAU Comunica (no cruzó por teléfono ni por correo).</span>';
   }
   const filas = [
-    ['Estado', `<span class="badge badge-${PLAN_CLASS[l.plan_estado] || 'gray'}">${esc(PLAN_LABEL[l.plan_estado] || l.plan_estado)}</span>`],
+    ['Estado', `<span class="badge with-dot badge-${PLAN_CLASS[l.plan_estado] || 'gray'}">${esc(PLAN_LABEL[l.plan_estado] || l.plan_estado)}</span>`],
     ['Plan', l.plan_nombre ? esc(l.plan_nombre) : '—'],
     ['Inicio', l.plan_inicia ? fmtDate(l.plan_inicia) : '—'],
     ['Vencimiento', l.plan_expira ? fmtDate(l.plan_expira) : '—'],
@@ -1334,32 +1783,18 @@ async function scoreDetail(leadId, btn) {
   if (btn) { btn.disabled = true; btn.textContent = 'Calculando…'; }
   const data = await api('POST', `/leads/${leadId}/score`);
   if (data && !data.detail) loadDetail(leadId);
-  else if (btn) { btn.disabled = false; btn.textContent = 'Calcular score'; }
+  else {
+    if (btn) { btn.disabled = false; btn.textContent = 'Calcular score'; }
+    if (data && data.detail) toast(data.detail, 'crit');
+  }
 }
 
 /* ══════════ Scoreboard ══════════ */
-
-/* Lunes a domingo de la semana con `offset` (0 = esta, -1 = la pasada). Escribe en el rango
-   COMPARTIDO, asi que el dashboard y la tabla de leads quedan mirando la misma semana: si
-   cada pantalla tuviera su periodo, cuadrar los numeros entre ellas seria imposible. */
-function ponerSemana(offset) {
-  const hoy = new Date();
-  const lunes = new Date(hoy.getFullYear(), hoy.getMonth(),
-                         hoy.getDate() - ((hoy.getDay() + 6) % 7) + offset * 7);
-  const domingo = new Date(lunes.getFullYear(), lunes.getMonth(), lunes.getDate() + 6);
-  dateRange = { desde: isoDia(lunes), hasta: isoDia(domingo) };
-  document.getElementById('d-desde').value = dateRange.desde;
-  document.getElementById('d-hasta').value = dateRange.hasta;
-  document.getElementById('d-mes').value = '';
-  document.getElementById('d-anio').value = '';
-  recargarPorRango();
-}
-
 let scoreboardActual = null;
 
 async function loadScoreboard() {
-  const el = document.getElementById('sb-body');
-  renderRangeChip('range-chip-sb');
+  const el = $('sb-body');
+  if (!el.children.length) el.innerHTML = '<div class="loading"><span class="spinner"></span>Cargando…</div>';
   const s = await api('GET', '/scoreboard?' + aplicarRango(new URLSearchParams()));
   if (!s) return;
   scoreboardActual = s;
@@ -1370,11 +1805,11 @@ async function loadScoreboard() {
   const aprox = Object.values(s.aproximados || {}).reduce((a, b) => a + b, 0);
 
   el.innerHTML = `
-    ${hayRango() ? '' : '<div class="empty-box">Sin semana elegida se están contando todos los hitos del histórico. Pulsa «Esta semana» o «Semana pasada».</div>'}
-    <div class="card"><table>
-      <thead><tr><th>Concepto</th><th style="text-align:right">Cantidad</th></tr></thead>
+    ${hayRango() ? '' : `<div class="notice" style="margin-bottom:14px">${ico('info')}<div class="notice-body">Sin semana elegida se están contando todos los hitos del histórico. Pulsa <b>Esta semana</b> o <b>Semana pasada</b>.</div></div>`}
+    <div class="card"><table class="table-plain">
+      <thead><tr><th>Concepto</th><th class="num">Cantidad</th></tr></thead>
       <tbody>${filas.map(([l, n, a]) => `
-        <tr><td>${esc(l)}</td><td style="text-align:right"><b>${n}</b>${
+        <tr><td>${esc(l)}</td><td class="num"><b>${n}</b>${
           a ? ` <span class="hint">(${a} aprox.)</span>` : ''}</td></tr>`).join('')}
       </tbody>
     </table></div>
@@ -1389,18 +1824,13 @@ async function copiarScoreboard() {
   const lineas = [`Scoreboard ${s.desde || '(todo)'} a ${s.hasta || '(todo)'}`,
                   `Leads nuevos: ${s.leads_nuevos}`].concat(
     s.orden.map(v => `${TAG_LABEL[v] || v}: ${(s.por_evento || {})[v] || 0}`));
-  const texto = lineas.join('\n');
-  try {
-    await navigator.clipboard.writeText(texto);
-    alert('Scoreboard copiado.');
-  } catch (e) {
-    alert(texto);
-  }
+  copiarTexto(lineas.join('\n'), 'Scoreboard copiado');
 }
 
 /* ══════════ Etiquetado ══════════ */
 async function loadEtiquetado() {
-  const listEl = document.getElementById('tag-list');
+  const listEl = $('tag-list');
+  if (!listEl.children.length) listEl.innerHTML = '<div class="loading"><span class="spinner"></span>Cargando…</div>';
   // Sin ninguna etiqueta, no outcome='nuevo': un lead al que solo se le puso el
   // responsable ya paso por aqui y no debe reaparecer en la cola.
   // has_transcript va porque sin conversacion no hay nada que leer ni que decidir; es la
@@ -1409,54 +1839,86 @@ async function loadEtiquetado() {
     sin_etiquetas: 'true', has_transcript: 'true', limit: 200, offset: 0,
   });
   aplicarRango(params);
-  renderRangeChip('range-chip-tag');
   const data = await api('GET', '/leads?' + params);
   if (!data) return;
 
-  document.getElementById('tag-count').textContent =
-    `${data.total} pendiente${data.total !== 1 ? 's' : ''}`;
+  $('tag-count').textContent = `${data.total} pendiente${data.total !== 1 ? 's' : ''}`;
 
   if (!data.items.length) {
     // Distinguir «no queda nada» de «no queda nada EN ESTE RANGO». Sin esto, filtrar una
     // semana tranquila diria «todo etiquetado» con 186 leads esperando, y nadie volveria.
     listEl.innerHTML = hayRango()
-      ? `<div class="empty-box">No quedan leads pendientes de etiquetar entre
-           ${esc(textoRango())}.<br><button class="btn-sm" style="margin-top:10px"
-           onclick="limpiarRango()">Ver todo el pendiente</button></div>`
-      : '<div class="empty-box">No quedan leads pendientes de etiquetar.</div>';
-    document.getElementById('tag-panel').innerHTML = '<div class="empty-box">Todo etiquetado.</div>';
+      ? `<div class="empty">${ico('check-circle')}<p>No quedan leads pendientes de etiquetar entre ${esc(textoRango())}.</p>
+           <button type="button" class="btn btn-secondary btn-sm" onclick="limpiarRango()">Ver todo el pendiente</button></div>`
+      : `<div class="empty">${ico('check-circle')}<p>No quedan leads pendientes de etiquetar.</p></div>`;
+    $('tag-panel').innerHTML = `<div class="empty">${ico('check-circle')}<p>Todo etiquetado.</p></div>`;
+    $('tag-grid').classList.remove('show-panel');
     tagSelected = null;
     return;
   }
   if (!data.items.some(l => l.lead_id === tagSelected)) tagSelected = data.items[0].lead_id;
 
-  listEl.innerHTML = data.items.map(l => `
-    <div class="tag-item${l.lead_id === tagSelected ? ' active' : ''}" onclick="selectTag('${esc(l.lead_id)}')">
-      <div class="t-name">${esc(l.contact_name || l.wa_display_name || '+' + l.lead_id)}</div>
-      <div class="t-sub">${l.company_name ? esc(l.company_name) + ' · ' : ''}${fmtDate(l.captured_at)}</div>
-    </div>`).join('');
+  listEl.innerHTML = data.items.map(l => {
+    const nombre = nombreLead(l);
+    const sub = [l.company_name, fmtDate(l.captured_at), l.message_count ? `${l.message_count} mensajes` : '']
+      .filter(Boolean).map(esc).join(' · ');
+    return `<button type="button" class="tag-item${l.lead_id === tagSelected ? ' active' : ''}" data-id="${esc(l.lead_id)}" onclick="selectTag('${esc(l.lead_id)}')">
+      ${avatar(nombre, '', l.lead_id)}
+      <span class="tag-item-body"><span class="t-name">${esc(nombre || '+' + l.lead_id)}</span><span class="t-sub">${sub}</span></span>
+    </button>`;
+  }).join('');
 
   loadTagPanel(tagSelected);
 }
 
 function selectTag(leadId) {
   tagSelected = leadId;
-  document.querySelectorAll('.tag-item').forEach(el => el.classList.remove('active'));
+  $('tag-grid').classList.add('show-panel');   // en el celular: pasa de la lista al panel
   loadEtiquetado();
 }
 
+function volverListaTag() {
+  $('tag-grid').classList.remove('show-panel');
+  loadEtiquetado();
+}
+
+/* Pasa al lead que sigue en la cola. Si el actual acaba de recibir etiqueta, al recargar
+   ya no estara; si se salto sin etiquetar, sigue ahi y se pasa al de al lado. */
+function siguientePendiente() {
+  const ids = [...document.querySelectorAll('.tag-item')].map(b => b.dataset.id);
+  const i = ids.indexOf(tagSelected);
+  const sig = ids[i + 1] || ids[0];
+  if (!sig || sig === tagSelected) { loadEtiquetado(); return; }
+  selectTag(sig);
+}
+
+function moverSeleccionTag(delta) {
+  const ids = [...document.querySelectorAll('.tag-item')].map(b => b.dataset.id);
+  if (!ids.length) return;
+  const i = Math.max(0, ids.indexOf(tagSelected));
+  const j = Math.min(ids.length - 1, Math.max(0, i + delta));
+  if (ids[j] !== tagSelected) selectTag(ids[j]);
+}
+
 async function loadTagPanel(leadId) {
-  const panel = document.getElementById('tag-panel');
-  panel.innerHTML = '<div class="empty-box"><span class="spinner"></span>Cargando…</div>';
+  const panel = $('tag-panel');
+  panel.innerHTML = '<div class="loading"><span class="spinner"></span>Cargando…</div>';
   const l = await api('GET', `/leads/${leadId}`);
   if (!l || l.detail) return;
+  const nombre = nombreLead(l);
   panel.innerHTML = `
-    <div class="panel-title">${esc(l.contact_name || l.wa_display_name || '+' + l.lead_id)}
-      <code style="font-size:12px;color:var(--gray-500)">+${esc(l.lead_id)}</code>
+    <button type="button" class="btn btn-ghost btn-sm tag-back" onclick="volverListaTag()">${ico('arrow-left', 'ico-sm')}Volver a la lista</button>
+    <div class="panel-title">
+      <span class="row">${avatar(nombre, 'avatar-sm', l.lead_id)}${esc(nombre || '+' + l.lead_id)}</span>
+      <a href="#detail/${esc(l.lead_id)}" class="hint" title="Abrir el detalle"><code>+${esc(l.lead_id)}</code></a>
     </div>
     ${renderTranscript(l.transcript)}
     <div class="panel-title" style="margin-top:18px">¿Cuál fue el resultado?</div>
-    ${tagPicker(l.lead_id, tagsOf(l), 'tag')}`;
+    ${tagPicker(l.lead_id, tagsOf(l), 'tag')}
+    <div class="tag-panel-foot">
+      <span class="hint">Marca el estado real. Si no se puede decidir todavía, pasa al siguiente.</span>
+      <button type="button" class="btn btn-secondary btn-sm" id="tag-next" onclick="siguientePendiente()">Siguiente pendiente${ico('arrow-right', 'ico-sm')}</button>
+    </div>`;
 }
 
 /* ══════════ Brief (documento estructurado) ══════════ */
@@ -1494,9 +1956,9 @@ function renderBriefDoc(b) {
     }</div>` : ''}
     ${b.seguimiento ? `<div class="bd-section"><h4>Siguiente paso</h4>
       <div class="bd-next">${esc(b.seguimiento.texto)}<br>
-        <span style="font-size:12.5px;color:var(--gray-600)">
+        <span style="font-size:12.5px;color:var(--ink-2)">
           Para el ${esc(fmtDia(b.seguimiento.fecha))}
-          ${b.seguimiento.vencido ? ' · <b style="color:var(--red)">VENCIDO</b>' : ''}
+          ${b.seguimiento.vencido ? ' · <b style="color:var(--crit)">VENCIDO</b>' : ''}
           ${b.seguimiento.autor ? ' · definido por ' + esc(cap(b.seguimiento.autor)) : ''}
         </span>
       </div>
@@ -1505,37 +1967,80 @@ function renderBriefDoc(b) {
       <div class="bd-nota">${esc(b.ultima_nota.texto)}<span class="firma">— ${esc(cap(b.ultima_nota.autor))}, ${esc(fmtFechaHora(b.ultima_nota.fecha))}</span></div>
     </div>` : ''}
     <div class="bd-section"><h4>Acción sugerida</h4>
-      <div class="bd-next">${esc(b.siguiente_paso.accion)}<br><a href="${esc(b.siguiente_paso.link)}" target="_blank">${esc(b.siguiente_paso.link)}</a></div>
+      <div class="bd-next">${esc(b.siguiente_paso.accion)}<br><a href="${esc(b.siguiente_paso.link)}" target="_blank" rel="noopener">${esc(b.siguiente_paso.link)}</a></div>
     </div>
     <div class="bd-foot">Generado automáticamente por MAU Lead Scoring — uso interno del equipo comercial.</div>
   </div>`;
 }
 
 async function showBrief(leadId) {
-  document.getElementById('brief-pdf-btn').style.display = 'none';
-  document.getElementById('brief-body').innerHTML = '<div class="modal-loading"><span class="spinner"></span>Generando brief…</div>';
-  document.getElementById('brief-overlay').classList.add('open');
+  $('brief-pdf-btn').hidden = true;
+  $('brief-body').innerHTML = '<div class="modal-loading"><span class="spinner"></span>Generando brief…</div>';
+  $('brief-overlay').classList.add('open');
   const data = await api('POST', `/leads/${leadId}/brief`);
   if (!data) return;
   if (!data.brief) {
-    document.getElementById('brief-body').textContent = 'No se pudo generar el brief.';
+    $('brief-body').innerHTML = `<div class="empty">${ico('alert')}<p>No se pudo generar el brief.</p></div>`;
     return;
   }
-  document.getElementById('brief-body').innerHTML = renderBriefDoc(data.brief);
-  document.getElementById('brief-pdf-btn').style.display = '';
+  $('brief-body').innerHTML = renderBriefDoc(data.brief);
+  $('brief-pdf-btn').hidden = false;
 }
 
-function closeBrief() { document.getElementById('brief-overlay').classList.remove('open'); }
-document.getElementById('brief-overlay').addEventListener('click', e => { if (e.target === e.currentTarget) closeBrief(); });
-document.getElementById('alertas-overlay').addEventListener('click', e => { if (e.target === e.currentTarget) closeAlertas(); });
+function closeBrief() { cerrarModal('brief-overlay'); }
 
-document.getElementById('clave-overlay').addEventListener('click', e => { if (e.target === e.currentTarget) closeClave(); });
+/* ══════════ Eventos globales ══════════ */
+
+// Clic fuera cierra popovers y menus; scroll cierra el popover de etiquetas, que al estar
+// en position:fixed no sigue a su fila.
+document.addEventListener('click', e => {
+  cerrarTagPops();
+  cerrarMenus();
+  if (!e.target.closest('#periodo-pop') && !e.target.closest('.periodo-chip')) cerrarPeriodo();
+});
+$('periodo-pop').addEventListener('click', e => e.stopPropagation());
+window.addEventListener('scroll', cerrarTagPops, true);
+
+// Clic en el fondo cierra el modal; el login no, que sin sesion no hay a donde volver.
+document.querySelectorAll('.overlay:not(#auth-overlay)').forEach(o => {
+  o.addEventListener('click', e => { if (e.target === o) o.classList.remove('open'); });
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { onEscape(); return; }
+  // Ctrl+K (o / fuera de un campo) enfoca el buscador desde cualquier vista.
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); enfocarBuscador(); return; }
+  if (e.key === '/' && !enCampo(e.target) && token()) { e.preventDefault(); enfocarBuscador(); return; }
+  // En la cola de etiquetado, las flechas recorren la lista.
+  if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && vistaActual() === 'etiquetado' && !enCampo(e.target)) {
+    e.preventDefault();
+    moverSeleccionTag(e.key === 'ArrowDown' ? 1 : -1);
+  }
+});
+
+$('q-inp').addEventListener('blur', () => setTimeout(ocultarResultados, 150));
+
+// La barra superior gana borde cuando el contenido pasa por debajo.
+function onScrollTop() {
+  const desplazado = $('main').scrollTop > 4 || window.scrollY > 4;
+  $('topbar').classList.toggle('scrolled', desplazado);
+}
+$('main').addEventListener('scroll', onScrollTop, { passive: true });
+window.addEventListener('scroll', onScrollTop, { passive: true });
+// Sombra en la columna Lead cuando la tabla se desplaza en horizontal.
+$('table-wrap').addEventListener('scroll', function () {
+  this.classList.toggle('scrolled-x', this.scrollLeft > 0);
+}, { passive: true });
+window.addEventListener('resize', aplicarSidebar);
 
 // Init
 renderTagFiltros();   // antes de cualquier route(): loadLeads() lee esos desplegables
 montarOjosClave();
+aplicarSidebar();
 renderUsuario();
 if (token()) {
-  document.getElementById('auth-overlay').classList.remove('open');
+  $('auth-overlay').classList.remove('open');
   route();
+} else {
+  $('user-inp').focus();
 }

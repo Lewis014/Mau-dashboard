@@ -2,268 +2,413 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#f7f8fb">
   <title>MAU — Leads Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400..700&family=Geist+Mono:wght@400..600&family=Instrument+Serif&display=swap">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
 
-<header>
-  <div class="logo">
-    <b>MAU</b>
-    <span>Lead Scoring · Contatech</span>
-  </div>
-  <div class="search">
-    <input type="search" id="q-inp" autocomplete="off"
-           placeholder="Buscar por nombre, empresa, correo, RUC o teléfono…"
-           oninput="onBuscar()" onsearch="onBuscar()">
-    <span class="ico">🔍</span>
-    <button class="clr" id="q-clr" onclick="limpiarBusqueda()" title="Limpiar búsqueda">✕</button>
-  </div>
-  <!-- Quien esta dentro va a la vista: las notas se firman solas, y sin esto nadie se da
-       cuenta de que quedo abierta la sesion de otro hasta despues de escribirlas. -->
-  <div id="header-user" style="display:none;align-items:center;gap:12px">
-    <button class="bell" id="bell" onclick="verAlertas()" title="Alertas de hoy">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-      <span class="bell-badge" id="bell-badge" style="display:none"></span>
-    </button>
-    <span id="user-chip" style="font-size:13px;opacity:0.9;white-space:nowrap"></span>
-    <button class="btn-sm" onclick="openClave()">Cambiar contraseña</button>
-    <button class="btn-sm" onclick="logout()">Cerrar sesión</button>
-  </div>
-</header>
+<!-- Iconos: un sprite y <use>. Trazo en currentColor, asi cada icono toma el color de su
+     contenedor. Nada de emoji: se pintan distinto en cada sistema y no se ven serios. -->
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></symbol>
+  <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+  <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+  <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-chevrons-ud" viewBox="0 0 24 24"><path d="m7 15 5 5 5-5M7 9l5-5 5 5"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-check-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 5-5"/></symbol>
+  <symbol id="i-x-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m15 9-6 6M9 9l6 6"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v4.5M12 16h.01"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></symbol>
+  <symbol id="i-dashboard" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+  <symbol id="i-tag" viewBox="0 0 24 24"><path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82Z"/><path d="M7 7h.01"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 15v-4M12 15V7M17 15v-6"/></symbol>
+  <symbol id="i-sort" viewBox="0 0 24 24"><path d="m8 9 4-4 4 4M8 15l4 4 4-4"/></symbol>
+  <symbol id="i-sort-desc" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><path d="m1 1 22 22"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></symbol>
+  <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8"/></symbol>
+  <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 1-15.5 6.2L3 16"/><path d="M3 21v-5h5"/><path d="M3 12a9 9 0 0 1 15.5-6.2L21 8"/><path d="M21 3v5h-5"/></symbol>
+  <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></symbol>
+  <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></symbol>
+  <symbol id="i-award" viewBox="0 0 24 24"><circle cx="12" cy="8" r="6"/><path d="M15.5 13 17 22l-5-3-5 3 1.5-9"/></symbol>
+  <symbol id="i-gauge" viewBox="0 0 24 24"><path d="m12 14 3.5-3.5"/><path d="M20.5 15A9 9 0 1 0 3.5 15"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+  <symbol id="i-message" viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-8 8H8l-5 3 1.2-4.2A8 8 0 1 1 21 12Z"/></symbol>
+  <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></symbol>
+  <symbol id="i-filter" viewBox="0 0 24 24"><path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m10.85 12.15 9.65-9.65M18 5l3 3M14 9l3 3"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/></symbol>
+  <symbol id="i-printer" viewBox="0 0 24 24"><path d="M6 9V3h12v6"/><rect x="6" y="14" width="12" height="7"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/></symbol>
+</svg>
 
-<div class="layout">
-  <aside>
-    <div class="nav-group">
-      <div class="nav-label">Principal</div>
-      <div class="nav-item" data-view="dashboard" onclick="nav('dashboard')">Dashboard</div>
-      <div class="nav-item" data-view="leads" onclick="nav('leads')">Leads</div>
-    </div>
-    <div class="nav-group">
-      <div class="nav-label">Trabajo</div>
-      <div class="nav-item" data-view="etiquetado" onclick="nav('etiquetado')">
-        Etiquetado <span class="nav-badge" id="tag-badge" style="display:none"></span>
+<div class="shell" id="shell">
+  <div class="scrim" id="scrim" onclick="cerrarDrawer()"></div>
+
+  <aside id="sidebar" aria-label="Navegación principal">
+    <a class="brand" href="#dashboard" onclick="cerrarDrawer()">
+      <span class="wordmark">MAU</span>
+      <span class="brand-sub">Lead Scoring · Contatech</span>
+    </a>
+    <nav>
+      <div class="nav-group">
+        <div class="eyebrow">Principal</div>
+        <a class="nav-item" href="#dashboard" data-view="dashboard" title="Dashboard">
+          <svg class="ico"><use href="#i-dashboard"/></svg><span>Dashboard</span>
+        </a>
+        <a class="nav-item" href="#leads" data-view="leads" title="Leads">
+          <svg class="ico"><use href="#i-users"/></svg><span>Leads</span>
+        </a>
       </div>
-      <div class="nav-item" data-view="scoreboard" onclick="nav('scoreboard')">Scoreboard</div>
+      <div class="nav-group">
+        <div class="eyebrow">Trabajo</div>
+        <a class="nav-item" href="#etiquetado" data-view="etiquetado" title="Etiquetado">
+          <svg class="ico"><use href="#i-tag"/></svg><span>Etiquetado</span>
+          <span class="nav-badge" id="tag-badge" hidden></span>
+        </a>
+        <a class="nav-item" href="#scoreboard" data-view="scoreboard" title="Scoreboard">
+          <svg class="ico"><use href="#i-chart"/></svg><span>Scoreboard</span>
+        </a>
+      </div>
+    </nav>
+    <div class="sidebar-foot">
+      <!-- Quien esta dentro va a la vista: las notas se firman solas, y sin esto nadie se da
+           cuenta de que quedo abierta la sesion de otro hasta despues de escribirlas. -->
+      <div class="user-card" id="header-user" hidden>
+        <button class="user-btn" id="user-btn" onclick="toggleUserMenu(event)" aria-haspopup="menu" aria-expanded="false">
+          <span class="avatar avatar-sm" id="user-avatar"></span>
+          <span class="user-name" id="user-chip"></span>
+          <svg class="ico ico-sm"><use href="#i-chevrons-ud"/></svg>
+        </button>
+        <div class="menu" id="user-menu" role="menu" hidden>
+          <button role="menuitem" onclick="openClave()"><svg class="ico ico-sm"><use href="#i-key"/></svg>Cambiar contraseña</button>
+          <button role="menuitem" onclick="logout()"><svg class="ico ico-sm"><use href="#i-logout"/></svg>Cerrar sesión</button>
+        </div>
+      </div>
+      <button class="btn-icon collapse-btn" id="collapse-btn" onclick="toggleSidebar()" title="Contraer menú" aria-label="Contraer menú">
+        <svg class="ico"><use href="#i-panel"/></svg>
+      </button>
     </div>
   </aside>
 
-  <main>
-    <!-- ══ Dashboard ══ -->
-    <section id="view-dashboard" style="display:none">
-      <div class="page-title">Dashboard</div>
-      <div class="page-sub">Resumen del pipeline de leads de MAU.</div>
-      <div class="toolbar">
-        <label>Desde:</label>
-        <input type="date" id="d-desde" onchange="onRangoManual()">
-        <label>Hasta:</label>
-        <input type="date" id="d-hasta" onchange="onRangoManual()">
-        <span class="sep"></span>
-        <label>Mes:</label>
-        <select id="d-mes" onchange="onAtajoMesAnio()">
-          <option value="">—</option>
-          <option value="1">Enero</option>
-          <option value="2">Febrero</option>
-          <option value="3">Marzo</option>
-          <option value="4">Abril</option>
-          <option value="5">Mayo</option>
-          <option value="6">Junio</option>
-          <option value="7">Julio</option>
-          <option value="8">Agosto</option>
-          <option value="9">Septiembre</option>
-          <option value="10">Octubre</option>
-          <option value="11">Noviembre</option>
-          <option value="12">Diciembre</option>
-        </select>
-        <label>Año:</label>
-        <select id="d-anio" onchange="onAtajoMesAnio()">
-          <option value="">—</option>
-        </select>
-        <button class="btn-sm" onclick="limpiarRango()">Limpiar</button>
+  <div class="main-col">
+    <header class="topbar" id="topbar">
+      <button class="btn-icon only-mobile" onclick="abrirDrawer()" aria-label="Abrir menú"><svg class="ico"><use href="#i-menu"/></svg></button>
+      <h1 class="topbar-title" id="topbar-title">Dashboard</h1>
+      <!-- Buscador global: vive en la barra para estar a mano desde cualquier vista. -->
+      <div class="search" id="search">
+        <svg class="ico search-ico"><use href="#i-search"/></svg>
+        <input type="search" id="q-inp" autocomplete="off" spellcheck="false"
+               placeholder="Buscar por nombre, empresa, correo, RUC o teléfono"
+               aria-label="Buscar leads" aria-autocomplete="list" aria-controls="search-results"
+               oninput="onBuscar()" onkeydown="onBuscarTecla(event)" onfocus="mostrarResultados()">
+        <kbd class="search-kbd" aria-hidden="true">Ctrl K</kbd>
+        <button class="btn-icon search-clr" id="q-clr" onclick="limpiarBusqueda()" aria-label="Limpiar búsqueda" hidden><svg class="ico ico-sm"><use href="#i-close"/></svg></button>
+        <div class="pop search-pop" id="search-results" role="listbox" hidden></div>
       </div>
-      <!-- Frescura ANTES de los KPIs, no como una tarjeta mas entre ellos: cuando la entrada
-           de leads se paro tres dias, el total se veia perfectamente normal y nadie lo noto. -->
-      <div id="frescura"></div>
-      <div class="kpi-grid" id="kpi-grid">
-        <div class="empty-box"><span class="spinner"></span>Cargando…</div>
+      <div class="topbar-right">
+        <button class="btn-icon only-mobile" onclick="toggleSearchMobile()" aria-label="Buscar"><svg class="ico"><use href="#i-search"/></svg></button>
+        <!-- El contador NO se puede marcar como leido: baja cuando el lead se resuelve, no
+             cuando le das clic. Un aviso que se puede silenciar enseña a silenciarlo. -->
+        <button class="btn-icon bell" id="bell" onclick="verAlertas()" title="Alertas de hoy" aria-label="Alertas de hoy">
+          <svg class="ico"><use href="#i-bell"/></svg>
+          <span class="bell-badge" id="bell-badge" hidden></span>
+        </button>
       </div>
-      <div class="section-title section-title-row">
-        <span>Embudo comercial <small>según los planes de MAU Comunica</small></span>
-        <button class="btn-sm" id="sync-btn" onclick="syncPlanes()">Sincronizar planes</button>
-      </div>
-      <div id="plan-grid"></div>
-      <div class="section-title">Alertas automáticas <small>avisan solas, sin que nadie consulte</small></div>
-      <div class="alerta-box" id="alerta-box"></div>
-      <div class="section-title" style="margin-top:28px">Leads por etiqueta</div>
-      <!-- Contenedor plano: cada grupo pinta dentro su propia .outcome-grid. -->
-      <div id="outcome-grid"></div>
-    </section>
+    </header>
 
-    <!-- ══ Leads ══ -->
-    <section id="view-leads" style="display:none">
-      <div class="page-title">Leads</div>
-      <div class="page-sub">Todos los leads capturados desde WhatsApp. Haz clic en una fila para ver el detalle.</div>
-      <div class="toolbar">
-        <!-- Un desplegable por grupo de etiquetas; los genera renderTagFiltros(). -->
-        <span id="tag-filtros"></span>
-        <label>Calificado:</label>
-        <select id="f-qualified" onchange="resetAndLoad()">
-          <option value="">Todos</option>
-          <option value="true">Sí</option>
-          <option value="false">No</option>
-        </select>
-        <label>Ordenar:</label>
-        <select id="f-sort" onchange="resetAndLoad()">
-          <option value="recientes">Recientes</option>
-          <option value="score">Prob. conversión</option>
-        </select>
-        <!-- Rango de fechas: los controles viven en el dashboard; aqui solo se refleja. -->
-        <span class="badge badge-blue range-chip" id="range-chip" style="display:none"></span>
-        <span class="count" id="count-badge"></span>
-        <button class="btn-sm" id="export-btn" onclick="exportarCSV(this)"
-                title="Descarga los leads que cumplen los filtros de arriba, no solo esta página">Exportar CSV</button>
-      </div>
-      <div class="card">
-        <table>
-          <thead>
-            <tr>
-              <th>Teléfono</th>
-              <th>Nombre</th>
-              <th>Empresa</th>
-              <th>Correo</th>
-              <th>P(conv.)</th>
-              <th>Tipo Lead</th>
-              <th>Calificado</th>
-              <th>Plan</th>
-              <th>Etiquetas</th>
-              <th>Seguimiento</th>
-              <th>Fecha</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody id="tbody">
-            <tr class="empty-row"><td colspan="12"><span class="spinner"></span>Cargando…</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <div class="pagination" id="pagination"></div>
-    </section>
+    <main id="main">
+      <div class="view-wrap">
 
-    <!-- ══ Detalle de lead ══ -->
-    <section id="view-detail" style="display:none">
-      <div class="back-link" onclick="nav('leads')">← Volver a leads</div>
-      <div id="detail-content"><div class="empty-box"><span class="spinner"></span>Cargando…</div></div>
-    </section>
+        <!-- ══ Dashboard ══ -->
+        <section id="view-dashboard" hidden>
+          <div class="view-head">
+            <div>
+              <h2 class="view-title">Dashboard</h2>
+              <p class="view-sub">Resumen del pipeline de leads de MAU.</p>
+            </div>
+            <div class="view-actions">
+              <div class="chip periodo-chip"></div>
+              <button class="btn btn-secondary btn-sm" id="sync-btn" onclick="syncPlanes()">
+                <svg class="ico ico-sm"><use href="#i-refresh"/></svg>Sincronizar planes
+              </button>
+            </div>
+          </div>
+          <!-- Frescura ANTES de los KPIs, no como una tarjeta mas entre ellos: cuando la
+               entrada de leads se paro tres dias, el total se veia normal y nadie lo noto. -->
+          <div id="frescura"></div>
+          <div class="kpi-grid" id="kpi-grid"></div>
+          <div class="section-head">
+            <h3>Embudo comercial</h3>
+            <span class="hint">según los planes de MAU Comunica</span>
+          </div>
+          <div class="card section-card" id="plan-grid"></div>
+          <div class="section-head">
+            <h3>Alertas automáticas</h3>
+            <span class="hint">avisan solas, sin que nadie consulte</span>
+          </div>
+          <div class="notice" id="alerta-box"></div>
+          <div class="section-head"><h3>Leads por etiqueta</h3></div>
+          <div class="barlist-grid" id="outcome-grid"></div>
+        </section>
 
-    <!-- ══ Etiquetado ══ -->
-    <section id="view-etiquetado" style="display:none">
-      <div class="page-title">Etiquetado</div>
-      <div class="page-sub">Leads con conversación a los que todavía no se les ha puesto ninguna etiqueta. Lee el transcript y asigna el resultado real.</div>
-      <!-- Esta vista también obedece al rango de fechas del dashboard, así que necesita
-           decirlo: una cola encogida sin explicación se lee como «ya no queda nada». -->
-      <div class="toolbar">
-        <span class="badge badge-blue range-chip" id="range-chip-tag" style="display:none"></span>
-        <span class="count" id="tag-count"></span>
-      </div>
-      <div class="tag-grid">
-        <div class="tag-list" id="tag-list"><div class="empty-box"><span class="spinner"></span>Cargando…</div></div>
-        <div class="panel" id="tag-panel"><div class="empty-box">Selecciona un lead de la lista para ver su conversación.</div></div>
-      </div>
-    </section>
+        <!-- ══ Leads ══ -->
+        <section id="view-leads" class="view-fit" hidden>
+          <div class="view-head">
+            <div>
+              <h2 class="view-title">Leads</h2>
+              <p class="view-sub">Todos los leads capturados desde WhatsApp. Abre uno para ver el detalle.</p>
+            </div>
+            <div class="view-actions">
+              <span class="count" id="count-badge" aria-live="polite"></span>
+              <div class="chip periodo-chip"></div>
+              <button class="btn btn-secondary btn-sm" id="export-btn" onclick="exportarCSV(this)"
+                      title="Descarga los leads que cumplen los filtros de arriba, no solo esta página">
+                <svg class="ico ico-sm"><use href="#i-download"/></svg><span>Exportar CSV</span>
+              </button>
+            </div>
+          </div>
+          <div class="filters" id="filters">
+            <button class="btn btn-secondary btn-sm only-mobile" id="filters-btn" onclick="abrirFiltros()">
+              <svg class="ico ico-sm"><use href="#i-filter"/></svg><span id="filters-btn-txt">Filtros</span>
+            </button>
+            <div class="filters-panel" id="filters-panel">
+              <div class="sheet-head only-mobile">
+                <b>Filtros</b>
+                <button class="btn-icon" onclick="cerrarFiltros()" aria-label="Cerrar filtros"><svg class="ico"><use href="#i-close"/></svg></button>
+              </div>
+              <!-- Un desplegable por grupo de etiquetas mas plan, seguimiento, calificado y
+                   orden; los genera renderTagFiltros(). -->
+              <div class="filters-row" id="tag-filtros"></div>
+              <button class="btn btn-ghost btn-sm" id="clear-filters" onclick="limpiarFiltrosLeads()" hidden>
+                <svg class="ico ico-sm"><use href="#i-close"/></svg>Limpiar filtros
+              </button>
+            </div>
+            <div class="active-chips only-mobile" id="active-chips"></div>
+          </div>
+          <div class="card table-card" id="table-card">
+            <div class="table-wrap" id="table-wrap">
+              <table class="leads-table">
+                <thead>
+                  <tr>
+                    <th class="col-lead">Lead</th>
+                    <th class="col-score sortable" data-sort="score" aria-sort="none">
+                      <button type="button" onclick="ordenarPor('score')">Score<svg class="ico ico-sm"><use href="#i-sort"/></svg></button>
+                    </th>
+                    <th>Estado</th>
+                    <th>Plan</th>
+                    <th>Etiquetas</th>
+                    <th>Seguimiento</th>
+                    <th class="col-fecha sortable" data-sort="recientes" aria-sort="none">
+                      <button type="button" onclick="ordenarPor('recientes')">Fecha<svg class="ico ico-sm"><use href="#i-sort"/></svg></button>
+                    </th>
+                    <th class="col-acciones"><span class="sr-only">Acciones</span></th>
+                  </tr>
+                </thead>
+                <tbody id="tbody"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="pagination" id="pagination"></div>
+        </section>
 
-    <!-- La unica pantalla que cuenta EVENTOS y no leads: cada fila es «cuantas veces paso
-         esto en la semana», fechado por el hito, no por cuando entro el lead. -->
-    <section id="view-scoreboard" style="display:none">
-      <div class="page-title">Scoreboard</div>
-      <div class="page-sub">Qué pasó en la semana. Se cuenta por la fecha de cada hito, no por cuándo entró el lead.</div>
-      <div class="toolbar">
-        <button class="btn-sm" onclick="ponerSemana(0)">Esta semana</button>
-        <button class="btn-sm" onclick="ponerSemana(-1)">Semana pasada</button>
-        <span class="badge badge-blue range-chip" id="range-chip-sb" style="display:none"></span>
-        <button class="btn-sm" style="margin-left:auto" onclick="copiarScoreboard()">Copiar</button>
+        <!-- ══ Detalle de lead ══ -->
+        <section id="view-detail" hidden>
+          <div id="detail-content"></div>
+        </section>
+
+        <!-- ══ Etiquetado ══ -->
+        <section id="view-etiquetado" hidden>
+          <div class="view-head">
+            <div>
+              <h2 class="view-title">Etiquetado</h2>
+              <p class="view-sub">Leads con conversación y sin ninguna etiqueta. Lee el chat y marca el resultado real.</p>
+            </div>
+            <div class="view-actions">
+              <span class="count" id="tag-count"></span>
+              <!-- Esta vista tambien obedece al periodo, asi que tiene que decirlo: una cola
+                   encogida sin explicacion se lee como «ya no queda nada». -->
+              <div class="chip periodo-chip"></div>
+            </div>
+          </div>
+          <div class="tag-grid" id="tag-grid">
+            <div class="card tag-list" id="tag-list"></div>
+            <div class="card panel tag-panel" id="tag-panel">
+              <div class="empty"><svg class="ico"><use href="#i-message"/></svg><p>Elige un lead de la lista para leer su conversación.</p></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- La unica pantalla que cuenta EVENTOS y no leads: cada fila es «cuantas veces
+             paso esto en la semana», fechado por el hito, no por cuando entro el lead. -->
+        <section id="view-scoreboard" hidden>
+          <div class="view-head">
+            <div>
+              <h2 class="view-title">Scoreboard</h2>
+              <p class="view-sub">Qué pasó en la semana. Se cuenta por la fecha de cada hito, no por cuándo entró el lead.</p>
+            </div>
+            <div class="view-actions">
+              <div class="segmented" id="sb-semanas">
+                <button type="button" data-semana="0" onclick="ponerSemana(0)">Esta semana</button>
+                <button type="button" data-semana="-1" onclick="ponerSemana(-1)">Semana pasada</button>
+              </div>
+              <div class="chip periodo-chip"></div>
+              <button class="btn btn-secondary btn-sm" onclick="copiarScoreboard()">
+                <svg class="ico ico-sm"><use href="#i-copy"/></svg>Copiar
+              </button>
+            </div>
+          </div>
+          <div id="sb-body"></div>
+        </section>
+
       </div>
-      <div id="sb-body"><div class="empty-box"><span class="spinner"></span>Cargando…</div></div>
-    </section>
-  </main>
+    </main>
+  </div>
 </div>
 
-<!-- Alertas modal -->
+<!-- Selector de periodo: uno solo para las cuatro vistas, anclado al chip que lo abre. -->
+<div class="pop periodo-pop" id="periodo-pop" role="dialog" aria-label="Periodo" hidden>
+  <div class="pop-section">
+    <div class="eyebrow">Atajos</div>
+    <div class="chips">
+      <button type="button" class="chip" onclick="atajoPeriodo('hoy')">Hoy</button>
+      <button type="button" class="chip" onclick="ponerSemana(0)">Esta semana</button>
+      <button type="button" class="chip" onclick="ponerSemana(-1)">Semana pasada</button>
+      <button type="button" class="chip" onclick="ponerMes(0)">Este mes</button>
+      <button type="button" class="chip" onclick="ponerMes(-1)">Mes pasado</button>
+      <button type="button" class="chip" onclick="limpiarRango()">Todo el histórico</button>
+    </div>
+  </div>
+  <div class="pop-section">
+    <div class="eyebrow">Mes y año</div>
+    <div class="row">
+      <select id="d-mes" onchange="onAtajoMesAnio()" aria-label="Mes">
+        <option value="">Mes</option>
+        <option value="1">Enero</option><option value="2">Febrero</option><option value="3">Marzo</option>
+        <option value="4">Abril</option><option value="5">Mayo</option><option value="6">Junio</option>
+        <option value="7">Julio</option><option value="8">Agosto</option><option value="9">Septiembre</option>
+        <option value="10">Octubre</option><option value="11">Noviembre</option><option value="12">Diciembre</option>
+      </select>
+      <select id="d-anio" onchange="onAtajoMesAnio()" aria-label="Año"><option value="">Año</option></select>
+    </div>
+  </div>
+  <div class="pop-section">
+    <div class="eyebrow">Rango exacto</div>
+    <div class="row">
+      <input type="date" id="d-desde" onchange="onRangoManual()" aria-label="Desde">
+      <span class="hint">a</span>
+      <input type="date" id="d-hasta" onchange="onRangoManual()" aria-label="Hasta">
+    </div>
+  </div>
+</div>
+
+<!-- Alertas -->
 <div class="overlay" id="alertas-overlay">
-  <div class="modal modal-brief">
+  <div class="modal modal-md" role="dialog" aria-modal="true" aria-labelledby="alertas-title">
     <div class="modal-head">
-      <span class="modal-title">Alertas de hoy</span>
-      <button class="modal-close" onclick="closeAlertas()">×</button>
+      <span class="modal-title" id="alertas-title">Alertas de hoy</span>
+      <button class="btn-icon" onclick="closeAlertas()" aria-label="Cerrar"><svg class="ico"><use href="#i-close"/></svg></button>
     </div>
     <div id="alertas-body"></div>
   </div>
 </div>
 
-<!-- Brief modal -->
+<!-- Brief -->
 <div class="overlay" id="brief-overlay">
-  <div class="modal modal-brief">
+  <div class="modal modal-md" role="dialog" aria-modal="true" aria-labelledby="brief-title">
     <div class="modal-head no-print">
-      <span class="modal-title">Brief de venta</span>
-      <div style="display:flex;gap:10px;align-items:center">
-        <button class="btn-brief" id="brief-pdf-btn" style="display:none" onclick="window.print()">Exportar PDF</button>
-        <button class="modal-close" onclick="closeBrief()">×</button>
+      <span class="modal-title" id="brief-title">Brief de venta</span>
+      <div class="row">
+        <button class="btn btn-primary btn-sm" id="brief-pdf-btn" hidden onclick="window.print()">
+          <svg class="ico ico-sm"><use href="#i-printer"/></svg>Exportar PDF
+        </button>
+        <button class="btn-icon" onclick="closeBrief()" aria-label="Cerrar"><svg class="ico"><use href="#i-close"/></svg></button>
       </div>
     </div>
     <div id="brief-body"></div>
   </div>
 </div>
 
+<!-- Texto para copiar a mano, cuando el navegador no da permiso de portapapeles -->
+<div class="overlay" id="copiar-overlay">
+  <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="copiar-title">
+    <div class="modal-head">
+      <span class="modal-title" id="copiar-title">Copia el texto</span>
+      <button class="btn-icon" onclick="cerrarModal('copiar-overlay')" aria-label="Cerrar"><svg class="ico"><use href="#i-close"/></svg></button>
+    </div>
+    <p class="hint" style="margin-bottom:10px">El navegador no dejó copiar solo. Selecciona el texto y cópialo.</p>
+    <textarea class="copiar-texto" id="copiar-texto" readonly rows="8"></textarea>
+  </div>
+</div>
+
 <!-- Cambio de contraseña -->
 <div class="overlay" id="clave-overlay">
-  <div class="modal modal-auth">
+  <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="clave-title">
     <div class="modal-head">
-      <span class="modal-title">Cambiar contraseña</span>
-      <button class="modal-close" onclick="closeClave()">×</button>
+      <span class="modal-title" id="clave-title">Cambiar contraseña</span>
+      <button class="btn-icon" onclick="closeClave()" aria-label="Cerrar"><svg class="ico"><use href="#i-close"/></svg></button>
     </div>
     <form class="auth-form" onsubmit="doCambiarClave(event)">
       <p>Cambias la contraseña de <b id="clave-quien"></b>.</p>
-      <div>
+      <div class="field-group">
         <label for="clave-actual">Contraseña actual</label>
         <input type="password" id="clave-actual" autocomplete="current-password" required>
       </div>
-      <div>
+      <div class="field-group">
         <label for="clave-nueva">Nueva contraseña</label>
         <input type="password" id="clave-nueva" autocomplete="new-password" minlength="8" required>
       </div>
-      <div>
+      <div class="field-group">
         <label for="clave-rep">Repite la nueva</label>
         <input type="password" id="clave-rep" autocomplete="new-password" minlength="8" required>
       </div>
-      <span class="auth-error" id="clave-err"></span>
-      <span class="hint">Mínimo 8 caracteres. Las sesiones que ya tengas abiertas en otros
-        navegadores <b>seguirán activas</b> hasta que caduquen.</span>
-      <button type="submit" class="btn-primary" id="clave-btn">Guardar</button>
+      <span class="auth-error" id="clave-err" hidden></span>
+      <span class="hint">Mínimo 8 caracteres. Las sesiones que ya tengas abiertas en otros navegadores
+        <b>seguirán activas</b> hasta que caduquen.</span>
+      <button type="submit" class="btn btn-primary" id="clave-btn">Guardar</button>
     </form>
   </div>
 </div>
 
-<!-- Auth modal -->
-<div class="overlay open" id="auth-overlay">
-  <div class="modal modal-auth">
-    <div class="modal-head">
-      <span class="modal-title">Acceso al Dashboard</span>
+<!-- Acceso -->
+<div class="overlay overlay-auth open" id="auth-overlay">
+  <div class="modal modal-sm modal-auth" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+    <div class="auth-brand">
+      <span class="wordmark">MAU</span>
+      <span class="brand-sub">Lead Scoring · Contatech</span>
     </div>
     <form class="auth-form" onsubmit="doLogin(event)">
-      <p>Inicia sesión para continuar.</p>
-      <div>
+      <h2 class="modal-title" id="auth-title">Entrar al dashboard</h2>
+      <div class="field-group">
         <label for="user-inp">Usuario</label>
-        <input type="text" id="user-inp" placeholder="admin" autocomplete="username" required>
+        <input type="text" id="user-inp" autocomplete="username" autocapitalize="off" required>
       </div>
-      <div>
+      <div class="field-group">
         <label for="pass-inp">Contraseña</label>
-        <input type="password" id="pass-inp" placeholder="••••••••••••" autocomplete="current-password" required>
+        <input type="password" id="pass-inp" autocomplete="current-password" required>
       </div>
-      <span class="auth-error" id="auth-err">Credenciales incorrectas. Vuelve a intentarlo.</span>
-      <button type="submit" class="btn-primary" id="login-btn">Ingresar</button>
+      <span class="auth-error" id="auth-err" hidden>Credenciales incorrectas. Vuelve a intentarlo.</span>
+      <button type="submit" class="btn btn-primary" id="login-btn">Ingresar</button>
     </form>
   </div>
 </div>
+
+<div class="toasts" id="toasts" aria-live="polite" aria-relevant="additions"></div>
 
 <script src="/static/app.js" defer></script>
 </body>
