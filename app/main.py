@@ -17,6 +17,7 @@ import asyncpg
 from fastapi import FastAPI, HTTPException, Depends, Query, Security
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app import db
@@ -806,6 +807,23 @@ async def health():
 @app.get("/")
 async def root():
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+
+
+class _Estaticos(StaticFiles):
+    """CSS y JS del dashboard, sin cache en el navegador.
+
+    No hay paso de build ni versionado en las URLs: tras un despliegue, el equipo seguiria
+    viendo el CSS/JS anterior hasta vaciar la cache. Con no-cache el navegador revalida
+    con el ETag en cada carga, que es barato y siempre trae lo ultimo.
+    """
+
+    def file_response(self, *args, **kwargs):
+        respuesta = super().file_response(*args, **kwargs)
+        respuesta.headers["Cache-Control"] = "no-cache"
+        return respuesta
+
+
+app.mount("/static", _Estaticos(directory=STATIC_DIR), name="static")
 
 
 @app.get("/robots.txt")

@@ -1,0 +1,297 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --brand: #1e3a8a; --brand-dark: #172c6b; --brand-light: #e8edfb; --brand-accent: #2563eb;
+  --gray-50: #f8fafc; --gray-100: #f1f5f9; --gray-200: #e2e8f0; --gray-300: #cbd5e1;
+  --gray-400: #94a3b8; --gray-500: #64748b; --gray-600: #475569; --gray-800: #1e293b;
+  --green: #16a34a; --green-light: #dcfce7;
+  --red: #dc2626; --red-light: #fee2e2;
+  --orange: #ea580c; --orange-light: #ffedd5;
+  --purple: #7c3aed; --purple-light: #ede9fe;
+  --blue: #2563eb; --blue-light: #dbeafe;
+  --amber: #d97706; --amber-light: #fef3c7;
+  --cyan: #0891b2; --cyan-light: #cffafe;
+  --indigo: #4f46e5; --indigo-light: #e0e7ff;
+  --teal: #0d9488; --teal-light: #ccfbf1;
+  --slate: #334155; --slate-light: #e2e8f0;
+  --brown: #92400e; --brown-light: #fde9d0;
+  --header-h: 62px; --sidebar-w: 240px;
+}
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--gray-50); color: var(--gray-800); min-height: 100vh; }
+
+/* ── Header ── */
+header { background: var(--brand); color: white; padding: 0 24px; display: flex; align-items: center; justify-content: space-between; height: var(--header-h); position: fixed; top: 0; left: 0; right: 0; z-index: 20; }
+.logo { display: flex; flex-direction: column; line-height: 1.2; }
+.logo b { font-size: 19px; font-weight: 800; letter-spacing: 0.01em; font-family: Georgia, 'Times New Roman', serif; }
+.logo span { font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; opacity: 0.85; }
+
+/* ── Buscador (vive en el header para estar visible desde cualquier vista) ── */
+.search { flex: 1; max-width: 440px; margin: 0 20px; position: relative; }
+.search input { width: 100%; border: 1px solid rgba(255,255,255,0.3); background: rgba(255,255,255,0.13); color: white; border-radius: 8px; padding: 8px 30px 8px 34px; font-size: 13.5px; font-family: inherit; }
+.search input::placeholder { color: rgba(255,255,255,0.72); }
+.search input:focus { outline: none; background: white; color: var(--gray-800); border-color: white; }
+.search input:focus::placeholder { color: var(--gray-400); }
+.search .ico { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); font-size: 12px; pointer-events: none; }
+.search .clr { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); border: none; background: none; color: inherit; font-size: 15px; line-height: 1; cursor: pointer; opacity: 0.7; padding: 2px 4px; display: none; }
+.search .clr:hover { opacity: 1; }
+@media (max-width: 720px) { .search { display: none; } }
+
+/* ── Campanita ── */
+.bell { position: relative; border: none; background: none; color: white; cursor: pointer; padding: 6px; line-height: 0; border-radius: 8px; opacity: 0.9; }
+.bell:hover { background: rgba(255,255,255,0.14); opacity: 1; }
+.bell svg { width: 19px; height: 19px; display: block; }
+/* El contador NO se puede marcar como leido: baja cuando el lead se resuelve, no cuando
+   le das clic. Un aviso que se puede silenciar enseña a silenciarlo. */
+.bell-badge { position: absolute; top: -1px; right: -2px; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px; background: var(--red); color: white; font: 700 10.5px/17px -apple-system, 'Segoe UI', sans-serif; text-align: center; }
+
+/* ── Layout ── */
+.layout { display: flex; padding-top: var(--header-h); min-height: 100vh; }
+aside { width: var(--sidebar-w); background: white; border-right: 1px solid var(--gray-200); position: fixed; top: var(--header-h); bottom: 0; left: 0; overflow-y: auto; padding: 18px 12px; }
+.nav-group { margin-bottom: 22px; }
+.nav-label { font-size: 11px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--gray-400); padding: 0 12px; margin-bottom: 6px; }
+.nav-item { display: flex; align-items: center; justify-content: space-between; padding: 9px 12px; border-radius: 8px; font-size: 14px; color: var(--gray-600); cursor: pointer; border-left: 3px solid transparent; margin-bottom: 2px; user-select: none; }
+.nav-item:hover { background: var(--gray-50); }
+.nav-item.active { background: var(--brand-light); color: var(--brand); font-weight: 600; border-left-color: var(--brand); }
+.nav-badge { background: var(--brand); color: white; font-size: 11px; font-weight: 700; border-radius: 20px; padding: 1px 8px; }
+
+main { flex: 1; margin-left: var(--sidebar-w); padding: 28px 32px; max-width: 1440px; }
+
+.page-title { font-size: 26px; font-weight: 800; margin-bottom: 4px; }
+.page-sub { color: var(--gray-500); font-size: 14.5px; margin-bottom: 24px; }
+
+/* ── KPI cards ── */
+.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 28px; }
+.kpi { background: white; border: 1px solid var(--gray-200); border-radius: 12px; padding: 18px 20px; box-shadow: 0 1px 2px rgba(15,23,42,0.04); }
+.kpi-label { font-size: 12.5px; font-weight: 600; color: var(--gray-500); margin-bottom: 8px; }
+.kpi-value { font-size: 30px; font-weight: 800; line-height: 1; }
+.kpi-value small { font-size: 15px; font-weight: 600; color: var(--gray-400); }
+.kpi-foot { font-size: 12px; color: var(--gray-500); margin-top: 8px; }
+
+.section-title { font-size: 16px; font-weight: 700; margin-bottom: 12px; }
+.section-title small { font-weight: 500; font-size: 12.5px; color: var(--gray-500); margin-left: 6px; }
+.section-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+/* Fecha de vencimiento y nº de pagos bajo el badge de plan, en la tabla de leads. */
+.plan-sub { font-size: 11px; color: var(--gray-500); margin-top: 3px; white-space: nowrap; }
+.outcome-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 28px; }
+.outcome-card { background: white; border: 1px solid var(--gray-200); border-radius: 10px; padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; cursor: pointer; }
+.outcome-card:hover { border-color: var(--gray-300); }
+.outcome-n { font-size: 20px; font-weight: 800; }
+
+/* ── Toolbar ── */
+.toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+.toolbar label { font-size: 13px; font-weight: 600; color: var(--gray-600); white-space: nowrap; }
+.toolbar select, .toolbar input[type="date"] { border: 1px solid var(--gray-200); border-radius: 6px; padding: 7px 10px; font-size: 13px; color: var(--gray-800); background: white; cursor: pointer; font-family: inherit; }
+.toolbar .sep { width: 1px; align-self: stretch; background: var(--gray-200); margin: 0 2px; }
+.range-chip { display: inline-flex; align-items: center; gap: 6px; }
+.range-chip button { border: none; background: none; padding: 0; margin-left: 2px; color: inherit; font-size: 13px; line-height: 1; cursor: pointer; opacity: 0.65; }
+.range-chip button:hover { opacity: 1; }
+.count { margin-left: auto; font-size: 13px; color: var(--gray-500); }
+
+/* ── Table ── */
+.card { background: white; border: 1px solid var(--gray-200); border-radius: 10px; overflow: hidden; box-shadow: 0 1px 2px rgba(15,23,42,0.04); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { background: var(--gray-50); border-bottom: 1px solid var(--gray-200); padding: 9px 14px; text-align: left; font-weight: 600; color: var(--gray-500); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; white-space: nowrap; }
+td { padding: 11px 14px; border-bottom: 1px solid var(--gray-100); vertical-align: middle; }
+tr:last-child td { border-bottom: none; }
+tbody tr { cursor: pointer; }
+tbody tr:hover td { background: var(--gray-50); }
+.cell-muted { color: var(--gray-500); }
+/* En un <td> el max-width lo ignora el layout automatico de tabla: va en un div interior. */
+.cell-email { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Badges ── */
+.badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 20px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.badge-green  { background: var(--green-light); color: var(--green); }
+.badge-gray   { background: var(--gray-100); color: var(--gray-600); }
+.badge-blue   { background: var(--blue-light); color: var(--blue); }
+.badge-orange { background: var(--orange-light); color: var(--orange); }
+.badge-red    { background: var(--red-light); color: var(--red); }
+.badge-purple { background: var(--purple-light); color: var(--purple); }
+.badge-amber  { background: var(--amber-light); color: var(--amber); }
+.badge-cyan   { background: var(--cyan-light); color: var(--cyan); }
+.badge-indigo { background: var(--indigo-light); color: var(--indigo); }
+.badge-teal   { background: var(--teal-light); color: var(--teal); }
+/* Responsable y canal comparten color dentro de su grupo: el color distingue la
+   categoria de un vistazo, no la etiqueta concreta (que ya se lee en el texto). */
+.badge-slate  { background: var(--slate-light); color: var(--slate); }
+.badge-brown  { background: var(--brown-light); color: var(--brown); }
+
+/* ── Score bar ── */
+.score-wrap { display: flex; align-items: center; gap: 6px; }
+.score-bar { width: 44px; height: 5px; background: var(--gray-200); border-radius: 3px; overflow: hidden; flex-shrink: 0; }
+.score-fill { height: 100%; background: var(--brand-accent); border-radius: 3px; }
+.score-text { font-size: 12px; color: var(--gray-500); }
+
+/* ── Fechas del embudo (detalle del lead) ── */
+.hito-list { display: flex; flex-direction: column; gap: 8px; }
+.hito { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.hito input[type=date] { border: 1px solid var(--gray-200); border-radius: 6px; padding: 3px 8px; font-size: 12.5px; color: var(--gray-800); }
+
+/* ── Frescura de los datos ── */
+.frescura { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; font-size: 13px; color: var(--gray-500); }
+/* Cuando la fuente se calla deja de ser una nota al pie: pasa a ocupar sitio y a tener
+   color, porque el fallo anterior fue justamente que todo se veia normal. */
+.frescura-mal { border: 1px solid var(--red); background: var(--red-light); color: #7f1d1d; border-radius: 8px; padding: 12px 14px; font-size: 13.5px; line-height: 1.55; }
+.frescura-mal b { color: #7f1d1d; }
+.frescura svg { flex-shrink: 0; vertical-align: -2px; margin-right: 6px; }
+
+/* ── Buttons / selects ── */
+.btn-sm { border: 1px solid var(--gray-200); background: white; border-radius: 6px; padding: 5px 12px; font-size: 13px; cursor: pointer; color: var(--gray-600); }
+.btn-sm:hover { background: var(--gray-50); }
+header .btn-sm { background: transparent; color: white; border-color: rgba(255,255,255,0.35); }
+header .btn-sm:hover { background: rgba(255,255,255,0.12); }
+.btn-brief { background: var(--brand-accent); color: white; border: none; border-radius: 6px; padding: 5px 12px; font-size: 12px; cursor: pointer; font-weight: 500; white-space: nowrap; }
+.btn-brief:hover { background: var(--brand); }
+.btn-brief:disabled { background: var(--gray-200); color: var(--gray-500); cursor: not-allowed; }
+
+/* ── Pagination ── */
+.pagination { display: flex; justify-content: center; gap: 6px; margin-top: 16px; }
+.btn-page { border: 1px solid var(--gray-200); background: white; border-radius: 6px; padding: 5px 12px; font-size: 13px; cursor: pointer; }
+.btn-page:hover:not(:disabled) { background: var(--gray-50); }
+.btn-page.active { background: var(--brand); color: white; border-color: var(--brand); }
+.btn-page:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── Detail view ── */
+.back-link { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--gray-500); cursor: pointer; margin-bottom: 14px; }
+.back-link:hover { color: var(--brand); }
+.detail-grid { display: grid; grid-template-columns: 340px 1fr; gap: 18px; align-items: start; }
+@media (max-width: 980px) { .detail-grid { grid-template-columns: 1fr; } }
+.panel { background: white; border: 1px solid var(--gray-200); border-radius: 12px; padding: 20px; box-shadow: 0 1px 2px rgba(15,23,42,0.04); }
+.panel + .panel { margin-top: 18px; }
+.panel-title { font-size: 14px; font-weight: 700; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; }
+.field { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--gray-100); font-size: 13px; }
+.field:last-child { border-bottom: none; }
+.field b { color: var(--gray-500); font-weight: 600; white-space: nowrap; }
+.field span { text-align: right; }
+.transcript { font-size: 13px; line-height: 1.65; max-height: 480px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+.msg { padding: 8px 12px; border-radius: 10px; max-width: 88%; white-space: pre-wrap; }
+.msg-human { background: var(--brand-light); align-self: flex-end; }
+.msg-ai { background: var(--gray-100); align-self: flex-start; }
+.msg-tag { font-size: 10.5px; font-weight: 700; color: var(--gray-400); text-transform: uppercase; margin-bottom: 2px; }
+.brief-box { font-size: 13.5px; line-height: 1.7; white-space: pre-wrap; color: var(--gray-800); }
+
+/* ── Etiquetado ── */
+.tag-grid { display: grid; grid-template-columns: 300px 1fr; gap: 18px; align-items: start; }
+@media (max-width: 980px) { .tag-grid { grid-template-columns: 1fr; } }
+.tag-list { background: white; border: 1px solid var(--gray-200); border-radius: 12px; overflow: hidden; max-height: 70vh; overflow-y: auto; }
+.tag-item { padding: 12px 16px; border-bottom: 1px solid var(--gray-100); cursor: pointer; }
+.tag-item:hover { background: var(--gray-50); }
+.tag-item.active { background: var(--brand-light); border-left: 3px solid var(--brand); }
+.tag-item .t-name { font-weight: 600; font-size: 13.5px; }
+.tag-item .t-sub { font-size: 12px; color: var(--gray-500); margin-top: 2px; }
+/* ── Etiquetas (picker + celda de la tabla) ── */
+.tag-picker { margin-top: 6px; }
+.tag-group-title { font-size: 10.5px; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--gray-400); margin: 12px 0 6px; }
+.tag-group-title:first-child { margin-top: 0; }
+.tag-btns { display: flex; flex-wrap: wrap; gap: 6px; }
+.btn-tag { border: 1px solid var(--gray-200); background: white; border-radius: 8px; padding: 6px 12px; font-size: 12.5px; font-weight: 600; cursor: pointer; color: var(--gray-600); font-family: inherit; }
+.btn-tag:hover { border-color: var(--gray-400); }
+.btn-tag:disabled { opacity: 0.5; cursor: progress; }
+.btn-tag.sel-green  { background: var(--green-light);  color: var(--green);  border-color: var(--green); }
+.btn-tag.sel-red    { background: var(--red-light);    color: var(--red);    border-color: var(--red); }
+.btn-tag.sel-blue   { background: var(--blue-light);   color: var(--blue);   border-color: var(--blue); }
+.btn-tag.sel-purple { background: var(--purple-light); color: var(--purple); border-color: var(--purple); }
+.btn-tag.sel-orange { background: var(--orange-light); color: var(--orange); border-color: var(--orange); }
+.btn-tag.sel-amber  { background: var(--amber-light);  color: var(--amber);  border-color: var(--amber); }
+.btn-tag.sel-cyan   { background: var(--cyan-light);   color: var(--cyan);   border-color: var(--cyan); }
+.btn-tag.sel-indigo { background: var(--indigo-light); color: var(--indigo); border-color: var(--indigo); }
+.btn-tag.sel-teal   { background: var(--teal-light);   color: var(--teal);   border-color: var(--teal); }
+.btn-tag.sel-slate  { background: var(--slate-light);  color: var(--slate);  border-color: var(--slate); }
+.btn-tag.sel-brown  { background: var(--brown-light);  color: var(--brown);  border-color: var(--brown); }
+.btn-tag.sel-gray   { background: var(--gray-100);     color: var(--gray-600); border-color: var(--gray-400); }
+
+.tag-cell { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; max-width: 230px; }
+.btn-tag-add { border: 1px dashed var(--gray-300); background: white; border-radius: 20px; width: 22px; height: 22px; font-size: 14px; line-height: 1; color: var(--gray-500); cursor: pointer; flex-shrink: 0; padding: 0; }
+.btn-tag-add:hover { border-color: var(--brand-accent); color: var(--brand-accent); }
+/* Fixed y colgado del <body>, no de la celda: .card recorta con overflow:hidden y un
+   popover absoluto dentro de la tabla quedaria cortado. JS le pone top/left. */
+.tag-pop { position: fixed; z-index: 40; width: 300px; max-height: 70vh; overflow-y: auto; background: white; border: 1px solid var(--gray-200); border-radius: 10px; padding: 14px; box-shadow: 0 12px 32px rgba(15,23,42,0.16); cursor: default; }
+
+/* ── Empty / Loading ── */
+.empty-row td { text-align: center; padding: 48px; color: var(--gray-500); cursor: default; }
+.empty-box { text-align: center; padding: 48px; color: var(--gray-500); font-size: 14px; }
+.spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid var(--gray-200); border-top-color: var(--brand-accent); border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: middle; margin-right: 6px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Modals ── */
+.overlay { display: none; position: fixed; inset: 0; background: rgba(15,23,42,0.45); z-index: 50; align-items: center; justify-content: center; }
+.overlay.open { display: flex; }
+.modal { background: white; border-radius: 12px; padding: 28px; width: 90%; max-height: 82vh; overflow-y: auto; box-shadow: 0 24px 64px rgba(0,0,0,0.18); }
+.modal-brief { max-width: 600px; }
+.modal-auth  { max-width: 400px; }
+.modal-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 18px; }
+.modal-title { font-size: 17px; font-weight: 700; line-height: 1.3; }
+.modal-close { background: none; border: none; font-size: 22px; cursor: pointer; color: var(--gray-500); line-height: 1; padding: 0 4px; }
+.modal-close:hover { color: var(--gray-800); }
+.modal-body { font-size: 14px; line-height: 1.75; color: var(--gray-800); white-space: pre-wrap; }
+.modal-loading { text-align: center; padding: 36px 0; color: var(--gray-500); font-size: 14px; }
+
+/* ── Brief document ── */
+.brief-doc { font-size: 13.5px; line-height: 1.6; color: var(--gray-800); }
+.bd-head { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid var(--brand); padding-bottom: 14px; margin-bottom: 18px; }
+.bd-brand b { font-family: Georgia, 'Times New Roman', serif; font-size: 20px; color: var(--brand); }
+.bd-brand div { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--gray-500); }
+.bd-meta { text-align: right; font-size: 12px; color: var(--gray-500); }
+.bd-title { font-size: 19px; font-weight: 800; margin-bottom: 4px; }
+.bd-sub { font-size: 12.5px; color: var(--gray-500); margin-bottom: 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.bd-section { margin-bottom: 16px; }
+.bd-section h4 { font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--brand); border-bottom: 1px solid var(--gray-200); padding-bottom: 4px; margin-bottom: 8px; }
+.bd-kv { display: grid; grid-template-columns: 170px 1fr; gap: 4px 12px; font-size: 13px; }
+.bd-kv b { color: var(--gray-500); font-weight: 600; }
+.bd-mod { padding: 8px 12px; background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: 8px; margin-bottom: 6px; }
+.bd-mod b { color: var(--brand); }
+.bd-next { background: var(--brand-light); border: 1px solid var(--brand); border-radius: 8px; padding: 12px 16px; font-size: 13.5px; }
+.bd-next a { color: var(--brand); font-weight: 600; word-break: break-all; }
+.bd-nota { background: var(--gray-50); border: 1px solid var(--gray-200); border-left: 3px solid var(--brand); border-radius: 8px; padding: 11px 14px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
+.bd-nota .firma { display: block; margin-top: 7px; font-size: 11.5px; color: var(--gray-500); white-space: normal; }
+.bd-foot { margin-top: 18px; padding-top: 10px; border-top: 1px solid var(--gray-200); font-size: 11px; color: var(--gray-400); }
+@media print {
+  body * { visibility: hidden; }
+  #brief-doc, #brief-doc * { visibility: visible; }
+  #brief-doc { position: absolute; left: 0; top: 0; width: 100%; padding: 24px; }
+  .no-print { display: none !important; }
+}
+
+/* ── Seguimiento (siguiente paso) y notas ── */
+.sp-form { display: flex; flex-direction: column; gap: 8px; }
+.sp-form .row { display: flex; gap: 8px; align-items: center; }
+.sp-form input, .nota-form textarea { border: 1px solid var(--gray-200); border-radius: 7px; padding: 8px 10px; font-size: 13px; font-family: inherit; color: var(--gray-800); width: 100%; }
+.sp-form input:focus, .nota-form textarea:focus { outline: 2px solid var(--brand-accent); border-color: transparent; }
+.nota-form textarea { resize: vertical; min-height: 76px; line-height: 1.5; }
+.nota-list { margin-top: 16px; display: flex; flex-direction: column; gap: 12px; max-height: 420px; overflow-y: auto; }
+.nota { border-left: 3px solid var(--brand-light); padding: 1px 0 1px 10px; }
+.nota-meta { font-size: 11px; color: var(--gray-500); margin-bottom: 3px; }
+.nota-meta b { color: var(--gray-600); font-weight: 700; }
+.nota-texto { font-size: 13px; line-height: 1.55; white-space: pre-wrap; }
+.hint { font-size: 12px; color: var(--gray-500); line-height: 1.5; }
+/* Celda de seguimiento en la tabla: el max-width va en el div, como en .cell-email. */
+.cell-sp { max-width: 180px; font-size: 12.5px; line-height: 1.4; }
+.cell-sp .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cell-sp .f { font-size: 11px; margin-top: 3px; }
+.alerta-box { font-size: 12.5px; line-height: 1.65; color: var(--gray-600); background: white; border: 1px solid var(--gray-200); border-radius: 10px; padding: 14px 16px; display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.alerta-box b { color: var(--gray-800); }
+.alerta-lista { font-size: 13px; line-height: 1.6; }
+.alerta-lista h4 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--brand); margin: 16px 0 6px; }
+.alerta-lista h4:first-child { margin-top: 0; }
+.alerta-item { border-bottom: 1px solid var(--gray-100); padding: 8px 0; }
+.alerta-item:last-child { border-bottom: none; }
+
+/* ── Auth form ── */
+.auth-form { display: flex; flex-direction: column; gap: 14px; }
+.auth-form p { font-size: 14px; color: var(--gray-600); margin-bottom: 4px; }
+.auth-form label { font-size: 13px; font-weight: 600; color: var(--gray-600); }
+.auth-form input { border: 1px solid var(--gray-200); border-radius: 7px; padding: 10px 14px; font-size: 14px; width: 100%; }
+.auth-form input:focus { outline: 2px solid var(--brand-accent); border-color: transparent; }
+.btn-primary { background: var(--brand); color: white; border: none; border-radius: 7px; padding: 10px 20px; font-size: 14px; font-weight: 600; cursor: pointer; width: 100%; }
+.btn-primary:hover { background: var(--brand-dark); }
+.auth-error { font-size: 13px; color: var(--red); display: none; }
+
+/* ── Ver contraseña ── */
+.pw-wrap { position: relative; }
+/* Va despues de `.auth-form input` a proposito: misma especificidad, gana el ultimo.
+   Sin el hueco, el texto de la contraseña pasa por debajo del icono. */
+.pw-wrap input { padding-right: 40px; }
+.pw-ojo { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); border: none; background: none; cursor: pointer; line-height: 0; padding: 4px; color: var(--gray-400); }
+.pw-ojo:hover { color: var(--gray-600); }
+.pw-ojo:focus-visible { outline: 2px solid var(--brand-accent); border-radius: 5px; color: var(--gray-600); }
+/* stroke=currentColor en el SVG: el icono sigue al color del boton, sin duplicar valores. */
+.pw-ojo svg { width: 17px; height: 17px; display: block; }
