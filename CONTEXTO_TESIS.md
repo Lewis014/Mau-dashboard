@@ -388,7 +388,7 @@ exacta; holgura de una casilla cuando *n* no es múltiplo de *k*). Conmutador **
 Afinidad** en Reparto, columna «Afinidad» con el porqué, `reparto_asignaciones.afinidad`/`brazo`.
 Ensayo con 212 candidatos reales y perfiles hipotéticos: 90–96 % de los leads con segmento van a
 quien mejor lo trabaja (60–64 % por azar), brecha 0,08 frente a 0,01. Pendiente: brazo aleatorio
-por lead; `estilo_comunicacion` en el extractor; `agentes_humanos` en el transcript.
+por lead; `agentes_humanos` en el transcript (dice `AGENTE:` sin nombre). **Estilo del lead (10/09/2026):** de tres atributos leídos de su redacción, entran `estilo_consulta` (directo · explorador, 77 % clasificable) y `dominio_tecnico` solo en su positivo `alto` (13 %); **`registro` se descartó** —18 cercanos contra 1 formal, por WhatsApp casi todos tutean—. Las reglas del extractor son operativas («formuló una pregunta concreta»), no descriptivas, porque si no clasificaba a quien solo respondía al bot. Extracción en `app/backfill.py` (`ESTILO_PROPS`) y relleno hacia atrás con `app/estilo_leads.py`.
 
 **CAVEAT heredado del score:** `conversion_prob` sigue sin validar contra outcomes reales
 (modelo entrenado en el proxy en inglés, ver pendiente #4). El reparto usa el ranking para

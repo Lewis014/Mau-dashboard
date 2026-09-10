@@ -153,14 +153,49 @@ extraídos:
 | `modulo` | procesa · comunica · valida | dominio de cada módulo | Conocimiento de producto (Verbeke) |
 | `tamano` | pequeña (< 10 RUCs) · mediana · grande (≥ 50) | cuentas grandes vs. volumen de pequeñas | Especialización por tamaño de cuenta (Zoltners, Sinha & Lorimer) |
 
-**Nivel B — extraer primero, emparejar después.** Evidencia buena, pero el dato del lado del
-lead falta o es escaso:
+**Nivel B — se activa pocas veces, pero cuenta cuando aparece:**
 
-| Dimensión | Qué falta | Base |
+| Dimensión | Cobertura | Base |
 |---|---|---|
-| `estilo` (tarea · relación) | Añadir un enum al extractor del backfill y re-extraer. El lado del vendedor sale de sus propios turnos en Chatwoot (§3, IBM) | Williams & Spiro 1985 |
-| `objecion` (precio) | Solo `precio` tiene volumen (44). Un único atributo: «cierra bien con objeción de precio» | Enrutamiento por habilidades |
-| `migracion` (concar · starsoft · contasis · odoo) | ~21 leads. Se define pero casi nunca se activa | Conocimiento de producto |
+| `tecnico` (alto) | 13 %: el lead habla de SIRE, PLE, crédito fiscal, integraciones | Conocimiento de producto (Verbeke) |
+| `objecion` (precio) | 13 %. Un único atributo: «cierra bien con objeción de precio» | Enrutamiento por habilidades |
+| `migracion` (concar · starsoft · contasis · odoo) | 4 %. Se define pero casi nunca decide | Conocimiento de producto |
+
+### Qué se puede leer en cómo escribe el lead (prueba de 30, 10/09/2026)
+
+El embudo lo guía el bot con preguntas cerradas, así que hay **menos redacción de la que
+parece**: el 75 % de los candidatos abre con la plantilla del anuncio de Meta —que escribe
+Meta, no el lead— y el turno libre más largo tiene una mediana de 42 caracteres. Solo el 32 %
+escribe algún turno de 60 caracteres o más. Aun así, 30 leads clasificados con el extractor
+dieron un veredicto claro por atributo:
+
+| Atributo | Sin clasificar | Distribución | Veredicto |
+|---|---|---|---|
+| **estilo_consulta** (directo · explorador) | 23 % | directo 17 · explorador 6 | **Entra.** El modelo ve el doble que unas reglas por palabras clave |
+| **dominio_tecnico** | 26 % | alto 4 · bajo 18 | **Entra solo el positivo**: `alto` (13 %) |
+| **registro** (formal · cercano) | 36 % | cercano 18 · **formal 1** | **Descartado** |
+
+Tres decisiones que salieron de ahí:
+
+1. **El registro se descarta por los datos, no por el modelo.** 18 cercanos contra 1 formal:
+   por WhatsApp en Perú casi todo el mundo tutea, y un atributo que vale lo mismo para todos no
+   distingue a nadie. Tampoco se le pregunta al vendedor.
+2. **`dominio_tecnico` solo guarda `alto`.** El «bajo» se lo llevaba cualquiera que escribiera
+   dos palabras; como clave de emparejamiento no aportaba nada.
+3. **Las reglas del prompt son operativas, no descriptivas.** La versión descriptiva («parece
+   directo») clasificaba a leads que solo respondían al bot: «Ernesto | El registro de las
+   facturas | De 600 a 800» salía como *explorador* cuando son respuestas, no consultas. La
+   versión operativa —*directo* = formuló una pregunta o petición concreta; *explorador* = pidió
+   que le contaran sin concretar; **null = no preguntó nada por su cuenta**— manda esos a
+   `sin_texto`. Con eso la fiabilidad del estilo sube de ~83 % a la que se ve en producción.
+
+Se extraen desde `app/backfill.py` (`ESTILO_PROPS`, `ESTILO_REGLAS`) para los leads nuevos, y
+`app/estilo_leads.py` los rellena hacia atrás con las mismas reglas sin tocar otras features.
+
+**Observación que vale más que los tres atributos:** si el bot hiciera **una sola pregunta
+abierta** al principio («¿qué te gustaría resolver?»), el texto libre pasaría de un tercio de
+los leads a casi todos, y mejoraría todo lo que el extractor saca, no solo esto. Es un cambio
+en n8n, no en el dashboard.
 
 **Nivel C — no usar como clave de emparejamiento**, aunque parezcan naturales:
 
@@ -282,10 +317,10 @@ Hecho (10/09/2026): tablas `vendedor_perfil` y `vendedor_ajustes`, columnas `afi
 `brazo`, pantalla «Vendedores», conmutador de método en Reparto con columna «Afinidad» que
 explica el porqué de cada asignación (las claves del lead con el valor del vendedor).
 
-Pendiente del lado del lead: un enum `estilo_comunicacion` (`tarea` · `relacion` · null) en el
-esquema del extractor de `backfill.py`, y una re-extracción (552 llamadas al modelo). Hasta
-entonces el nivel B queda en `m_k = 0,5` y no estorba. Y del lado del vendedor, guardar quién
-escribió cada turno (`agentes_humanos`): el transcript dice `AGENTE:` sin nombre.
+Hecho también (10/09/2026): `estilo_consulta` y `dominio_tecnico` en el extractor y en el
+formulario, con la pasada de relleno hacia atrás. Pendiente del lado del vendedor: guardar quién
+escribió cada turno (`agentes_humanos`), porque el transcript dice `AGENTE:` sin nombre y sin eso
+nunca podrá calificarse a un vendedor desde sus propias conversaciones (§3, IBM).
 
 Pantalla: un formulario de perfil por vendedor (seis controles deslizantes, no más, por §3) y,
 en la vista de Reparto, un tercer botón junto a *Top 10/20/50*: **Afinidad** contra
