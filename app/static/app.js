@@ -383,8 +383,8 @@ async function api(method, path, body) {
 }
 
 /* ══════════ Router ══════════ */
-const VIEWS = ['dashboard', 'leads', 'detail', 'etiquetado', 'reparto', 'scoreboard'];
-const TITULOS = { dashboard: 'Dashboard', leads: 'Leads', detail: 'Detalle del lead', etiquetado: 'Etiquetado', reparto: 'Reparto', scoreboard: 'Scoreboard' };
+const VIEWS = ['dashboard', 'leads', 'detail', 'etiquetado', 'reparto', 'vendedores', 'scoreboard'];
+const TITULOS = { dashboard: 'Dashboard', leads: 'Leads', detail: 'Detalle del lead', etiquetado: 'Etiquetado', reparto: 'Reparto', vendedores: 'Vendedores', scoreboard: 'Scoreboard' };
 
 function nav(view, param) {
   location.hash = param ? `#${view}/${param}` : `#${view}`;
@@ -416,6 +416,7 @@ function route() {
   if (v === 'detail') loadDetail(param);
   if (v === 'etiquetado') loadEtiquetado();
   if (v === 'reparto') loadReparto();
+  if (v === 'vendedores') loadVendedores();
   if (v === 'scoreboard') loadScoreboard();
   refreshTagBadge();
   renderCampana();   // usa la cache: no reevalua en cada cambio de vista
@@ -2104,12 +2105,19 @@ function repartoCuerpo(p, dentro) {
     </button>`;
   }).join('');
 
+  // Con tope por vendedor (formulario de Vendedores) ya no hay «un» tope: se dice el de cada
+  // uno solo cuando difieren, para no llenar el aviso cuando son iguales.
+  const topes = p.topes || {};
+  const tv = Object.values(topes);
+  const textoTope = !tv.some(Boolean) ? ''
+    : tv.every(x => x === tv[0]) ? `Tope de ${tv[0]} leads abiertos por persona.`
+    : 'Topes: ' + Object.entries(topes).map(([v, t]) => `${cap(v)} ${t || 'sin tope'}`).join(' · ') + '.';
   // Lo que hay que entender para fiarse del reparto: quien abre y como de parejo salio.
   const cabecera = `<div class="notice" style="margin-bottom:14px">${ico('info')}<div class="notice-body">
     Abre <b>${esc(cap(p.abre || ''))}</b> y el orden se invierte en cada ronda, así que quien
     pierde el primer puesto de una ronda gana el de la siguiente. ${p.rondas} ronda${p.rondas === 1 ? '' : 's'}.
     La diferencia entre la mejor y la peor cartera es de <b>${(p.brecha || 0).toFixed(2)}</b> conversiones esperadas.
-    ${p.capacidad ? `Tope de ${p.capacidad} leads abiertos por persona.` : ''}
+    ${textoTope}
   </div></div>`;
 
   const filas = p.asignaciones.map(a => {
@@ -2202,6 +2210,100 @@ async function confirmarReparto(btn) {
            : `${n} lead${n === 1 ? '' : 's'} repartidos`, om ? 'info' : 'ok');
   loadReparto();
   refreshTagBadge();
+}
+
+/* ══════════ Vendedores (perfil de afinidad) ══════════
+   La mitad del vendedor del metodo 2. Las dimensiones y sus preguntas las manda el backend
+   (app/afinidad.py): aqui no se repite la lista, solo se pinta. Quien esta en el reparto lo
+   ve en solo lectura; edita el administrador. */
+let vendedoresData = null;
+
+async function loadVendedores() {
+  const el = $('vd-body');
+  if (!el.children.length) el.innerHTML = '<div class="loading"><span class="spinner"></span>Cargando…</div>';
+  const d = await api('GET', '/vendedores');
+  if (!d) return;
+  vendedoresData = d;
+
+  const listos = d.items.filter(v => v.completado).length;
+  $('vd-count').textContent = `${listos} de ${d.items.length} completado${d.items.length === 1 ? '' : 's'}`;
+
+  const aviso = d.puede_editar ? '' : `<div class="notice" style="margin-bottom:14px">${ico('info')}<div class="notice-body">
+    Solo lectura. Los perfiles los edita el administrador: quien está en el reparto no ajusta su propia afinidad.</div></div>`;
+  const escala = `<div class="vd-scale">Escala de 0 a ${d.escala}: <b>0</b> le cuesta · <b>${d.neutro}</b> igual que con cualquiera · <b>${d.escala}</b> es su fuerte.
+    Las dimensiones <span class="vd-nivel">A</span> se usan con datos que ya existen; las <span class="vd-nivel">B</span> esperan a que el extractor saque ese dato del lead.</div>`;
+
+  el.innerHTML = aviso + escala + (d.items.length
+    ? d.items.map(v => tarjetaVendedor(v, d)).join('')
+    : `<div class="empty">${ico('users')}<p>No hay vendedores en el reparto (REPARTO_VENDEDORES).</p></div>`);
+}
+
+function tarjetaVendedor(v, d) {
+  const ro = !d.puede_editar;
+  const estado = v.completado
+    ? `Actualizado ${fmtDate(v.actualizado_at)}${v.actualizado_por ? ' por ' + esc(cap(v.actualizado_por)) : ''}`
+    : `Sin completar: todo en ${d.neutro}, neutro`;
+  const grupos = d.dimensiones.map(dim => `
+    <fieldset class="vd-dim"${ro ? ' disabled' : ''} data-dim="${esc(dim.id)}">
+      <legend>${esc(dim.pregunta)}<span class="vd-nivel" title="Nivel ${esc(dim.nivel)}">${esc(dim.nivel)}</span></legend>
+      <div class="vd-ayuda">${esc(dim.ayuda || '')}</div>
+      ${dim.claves.map(([clave, etiqueta]) => deslizador(v.vendedor, dim.id, clave, etiqueta,
+          (v.perfil[dim.id] || {})[clave], d)).join('')}
+    </fieldset>`).join('');
+
+  return `<div class="card vd-card" data-vendedor="${esc(v.vendedor)}">
+    <div class="vd-head">
+      ${avatar(cap(v.vendedor), 'avatar-lg')}
+      <div class="vd-who"><b>${esc(cap(v.vendedor))}</b><span class="hint">${estado}</span></div>
+      <span class="hint">${v.abiertos} lead${v.abiertos === 1 ? '' : 's'} abierto${v.abiertos === 1 ? '' : 's'}</span>
+    </div>
+    <div class="vd-grid">${grupos}</div>
+    <div class="vd-foot">
+      <label class="vd-cap">Tope de leads abiertos
+        <input type="number" min="0" step="1" id="vd-cap-${esc(v.vendedor)}"
+               value="${v.capacidad == null ? '' : v.capacidad}"
+               placeholder="${d.capacidad_global || 'sin tope'}"${ro ? ' disabled' : ''}>
+        <span class="hint">vacío = el global (${d.capacidad_global || 'sin tope'}) · 0 = sin tope</span>
+      </label>
+      ${ro ? '' : `<button type="button" class="btn btn-primary btn-sm" onclick="guardarPerfil('${esc(v.vendedor)}', this)">${ico('check', 'ico-sm')}Guardar</button>`}
+    </div>
+  </div>`;
+}
+
+function deslizador(vendedor, dim, clave, etiqueta, valor, d) {
+  const val = (valor == null) ? d.neutro : valor;
+  const id = `vd-${vendedor}-${dim}-${clave}`;
+  // oninput actualiza el numero de al lado sin repintar nada: es lo unico que cambia.
+  return `<label class="vd-slider" for="${esc(id)}">
+    <span>${esc(etiqueta)}</span>
+    <input type="range" id="${esc(id)}" min="0" max="${d.escala}" step="1" value="${val}"
+           data-dim="${esc(dim)}" data-clave="${esc(clave)}"
+           oninput="this.nextElementSibling.textContent = this.value">
+    <output class="vd-val">${val}</output>
+  </label>`;
+}
+
+async function guardarPerfil(vendedor, btn) {
+  const card = document.querySelector(`.vd-card[data-vendedor="${vendedor}"]`);
+  if (!card) return;
+  const perfil = {};
+  card.querySelectorAll('input[type=range]').forEach(i => {
+    if (!perfil[i.dataset.dim]) perfil[i.dataset.dim] = {};
+    perfil[i.dataset.dim][i.dataset.clave] = Number(i.value);
+  });
+  const capRaw = ($(`vd-cap-${vendedor}`).value || '').trim();
+  const capacidad = capRaw === '' ? null : Number(capRaw);
+  if (capacidad !== null && (!Number.isInteger(capacidad) || capacidad < 0)) {
+    toast('El tope debe ser un número entero, 0 o más', 'crit'); return;
+  }
+
+  btn.disabled = true;
+  const r = await api('PUT', `/vendedores/${encodeURIComponent(vendedor)}/perfil`, { perfil, capacidad });
+  btn.disabled = false;
+  if (!r) return;
+  if (r.detail) { toast(r.detail, 'crit'); return; }
+  toast(`Perfil de ${cap(vendedor)} guardado`, 'ok');
+  loadVendedores();
 }
 
 // La barra superior gana borde cuando el contenido pasa por debajo.

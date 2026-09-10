@@ -24,6 +24,7 @@ from app import db
 from app.catalog import MODULOS, LINK_TRIAL, LINK_DEMO
 from app.scoring import score_text
 from app import reparto
+from app import afinidad
 
 APP_TOKEN = os.getenv("APP_TOKEN", "")
 ADMIN_USER = os.getenv("ADMIN_USER", "admin").strip().lower()
@@ -712,6 +713,39 @@ async def lifespan(app: FastAPI):
     await pool.execute(
         "CREATE INDEX IF NOT EXISTS idx_reparto_asig_lead "
         "ON reparto_asignaciones (lead_id, asignado_at DESC)"
+    )
+
+    # Perfil de afinidad de cada vendedor (metodo 2, app/afinidad.py): con que clientes
+    # trabaja mejor, dimension por dimension, de 0 a 1. Lo rellena el administrador con las
+    # respuestas del propio vendedor. `origen` esta en la clave primaria para que, cuando se
+    # calcule desde sus conversaciones cerradas, conviva con lo que se puso a mano sin pisarlo.
+    await pool.execute(
+        """
+        CREATE TABLE IF NOT EXISTS vendedor_perfil (
+          vendedor        text NOT NULL,
+          dimension       text NOT NULL,
+          clave           text NOT NULL,
+          afinidad        real NOT NULL CHECK (afinidad >= 0 AND afinidad <= 1),
+          origen          text NOT NULL DEFAULT 'manual',
+          actualizado_at  timestamptz NOT NULL DEFAULT now(),
+          actualizado_por text,
+          PRIMARY KEY (vendedor, dimension, clave, origen)
+        )
+        """
+    )
+    # Ajustes por vendedor que no son afinidad: el tope de leads abiertos (NULL = el global
+    # REPARTO_CAPACIDAD; 0 = sin tope) y notas libres. Va aparte porque es UN valor por
+    # persona, no uno por dimension.
+    await pool.execute(
+        """
+        CREATE TABLE IF NOT EXISTS vendedor_ajustes (
+          vendedor        text PRIMARY KEY,
+          capacidad       integer CHECK (capacidad IS NULL OR capacidad >= 0),
+          notas           text,
+          actualizado_at  timestamptz NOT NULL DEFAULT now(),
+          actualizado_por text
+        )
+        """
     )
 
     # Los usuarios del login deben ser gente del equipo: asi el autor de una nota y la
@@ -1796,16 +1830,21 @@ async def reparto_preview(
 ):
     """Calcula el reparto SIN aplicarlo. Nadie reparte leads a ciegas."""
     equipo = _vendedores_validos(vendedores.split(",") if vendedores else None)
-    tope = REPARTO_CAPACIDAD if capacidad is None else capacidad
 
     pool = db.get_pool()
     async with pool.acquire() as conn:
         candidatos = await _candidatos_reparto(conn, limit)
         carga = await _carga_abierta(conn, equipo)
         inicio = await _cursor_reparto(conn, equipo)
+        ajustes = await _ajustes(conn, equipo)
 
-    # Huecos libres = tope menos lo que ya lleva abierto. Sin tope, sin limite.
-    huecos = {v: max(0, tope - carga[v]) for v in equipo} if tope > 0 else None
+    # Tope por vendedor: el de la peticion, si no el suyo (formulario de Vendedores), si no el
+    # global. Huecos libres = tope menos lo que ya lleva abierto. Quien no tiene tope recibe
+    # tantos huecos como leads hay: equivale a no limitarlo y permite un solo dict aunque
+    # otro vendedor si este limitado.
+    topes = _topes(equipo, ajustes, capacidad)
+    huecos = ({v: (len(candidatos) if topes[v] == 0 else max(0, topes[v] - carga[v]))
+               for v in equipo} if any(topes.values()) else None)
     plan = reparto.serpiente(candidatos, equipo, capacidad=huecos, inicio=inicio)
 
     # Los datos del lead viajan pegados al plan para que la tabla se pinte sin un segundo
@@ -1815,6 +1854,7 @@ async def reparto_preview(
         a["lead"] = por_id.get(a["lead_id"])
     for f in plan["resumen"]:
         f["abiertos"] = carga[f["vendedor"]]
+        f["tope"] = topes[f["vendedor"]]
         f["huecos"] = None if huecos is None else huecos[f["vendedor"]]
 
     return {
@@ -1824,7 +1864,8 @@ async def reparto_preview(
         "abre": equipo[plan["inicio"]] if equipo else None,
         "inicio": plan["inicio"],
         "rondas": plan["rondas"],
-        "capacidad": tope,
+        "capacidad": REPARTO_CAPACIDAD if capacidad is None else capacidad,
+        "topes": topes,               # por vendedor; 0 = sin tope
         "candidatos": len(candidatos),
         "asignaciones": plan["asignaciones"],
         "sin_asignar": plan["sin_asignar"],
@@ -1926,3 +1967,140 @@ async def reparto_historial(limit: int = Query(20, ge=1, le=100), _=Depends(chec
          LIMIT $1
         """, limit)
     return {"items": [db.row_to_dict(f) for f in filas]}
+
+
+# ══════════ Perfil de vendedor (metodo 2: afinidad) ══════════
+# Las dimensiones, la validacion y el significado de cada valor viven en app/afinidad.py;
+# aqui solo esta el cableado con la base de datos y quien puede tocar que.
+
+class PerfilBody(BaseModel):
+    # El formulario manda el perfil ENTERO en la escala 0-10 (reemplazo, no incremento), el
+    # tope de leads abiertos (None = usa el global, 0 = sin tope) y notas libres.
+    perfil: dict[str, dict[str, Optional[float]]]
+    capacidad: Optional[int] = None
+    notas: Optional[str] = None
+
+
+def _puede_editar_perfiles(usuario: str) -> bool:
+    """Quien esta EN el reparto no edita perfiles, ni el suyo ni el de nadie.
+
+    Un vendedor que pudiera subirse su propia afinidad se estaria repartiendo los mejores
+    leads a si mismo. Editan el administrador, el token de API y quien no entra en la cola
+    (el administrador comercial). Se decide por pertenencia al reparto y no por una lista
+    aparte, para que dar de alta a un vendedor le quite el permiso solo.
+    """
+    return usuario in ("api", ADMIN_USER) or usuario not in equipo_reparto()
+
+
+async def _perfiles(conn, vendedores: list[str]) -> dict[str, dict[str, dict[str, float]]]:
+    """Perfil guardado de cada vendedor, en 0-1. Quien no tiene filas no aparece."""
+    filas = await conn.fetch(
+        "SELECT vendedor, dimension, clave, afinidad FROM vendedor_perfil "
+        "WHERE vendedor = ANY($1::text[]) AND origen = 'manual'",
+        vendedores,
+    )
+    perfiles: dict[str, dict[str, dict[str, float]]] = {}
+    for f in filas:
+        perfiles.setdefault(f["vendedor"], {}).setdefault(f["dimension"], {})[f["clave"]] = f["afinidad"]
+    return perfiles
+
+
+async def _ajustes(conn, vendedores: list[str]) -> dict[str, dict]:
+    filas = await conn.fetch(
+        "SELECT vendedor, capacidad, notas, actualizado_at, actualizado_por "
+        "FROM vendedor_ajustes WHERE vendedor = ANY($1::text[])",
+        vendedores,
+    )
+    return {f["vendedor"]: db.row_to_dict(f) for f in filas}
+
+
+def _topes(equipo: list[str], ajustes: dict[str, dict], forzado: Optional[int]) -> dict[str, int]:
+    """Tope de leads abiertos por vendedor: el de la peticion, si no el suyo, si no el global.
+
+    0 significa sin tope. La distincion importa: NULL en vendedor_ajustes es «no se dijo
+    nada» y cae al global; 0 es «este no tiene tope aunque el global lo tenga».
+    """
+    if forzado is not None:
+        return {v: forzado for v in equipo}
+    salida = {}
+    for v in equipo:
+        propio = (ajustes.get(v) or {}).get("capacidad")
+        salida[v] = REPARTO_CAPACIDAD if propio is None else propio
+    return salida
+
+
+@app.get("/api/vendedores")
+async def listar_vendedores(usuario: str = Depends(check_auth)):
+    """Los vendedores del reparto con su perfil, su tope y su carga. Lo que pinta el formulario."""
+    equipo = equipo_reparto()
+    pool = db.get_pool()
+    async with pool.acquire() as conn:
+        perfiles = await _perfiles(conn, equipo)
+        ajustes = await _ajustes(conn, equipo)
+        carga = await _carga_abierta(conn, equipo)
+    items = []
+    for v in equipo:
+        aj = ajustes.get(v) or {}
+        items.append({
+            "vendedor": v,
+            "abiertos": carga[v],
+            "capacidad": aj.get("capacidad"),          # None = usa el global
+            "notas": aj.get("notas"),
+            "completado": v in perfiles,
+            "actualizado_at": aj.get("actualizado_at"),
+            "actualizado_por": aj.get("actualizado_por"),
+            "perfil": afinidad.a_escala(perfiles.get(v) or {}),
+        })
+    return {
+        "items": items,
+        "dimensiones": afinidad.dimensiones_json(),
+        "escala": afinidad.ESCALA,
+        "neutro": int(round(afinidad.NEUTRO * afinidad.ESCALA)),
+        "capacidad_global": REPARTO_CAPACIDAD,
+        "puede_editar": _puede_editar_perfiles(usuario),
+    }
+
+
+@app.put("/api/vendedores/{vendedor}/perfil")
+async def guardar_perfil(vendedor: str, body: PerfilBody, usuario: str = Depends(check_auth)):
+    """Reemplaza el perfil manual del vendedor y sus ajustes. Deja quien y cuando."""
+    if not _puede_editar_perfiles(usuario):
+        raise HTTPException(status_code=403,
+                            detail="Quien está en el reparto no edita perfiles")
+    vendedor = vendedor.strip().lower()
+    if vendedor not in equipo_reparto():
+        raise HTTPException(status_code=404, detail=f"{vendedor} no está en el reparto")
+    try:
+        perfil = afinidad.normalizar(body.perfil)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if body.capacidad is not None and body.capacidad < 0:
+        raise HTTPException(status_code=400, detail="El tope no puede ser negativo")
+    notas = (body.notas or "").strip() or None
+
+    pool = db.get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # Reemplazo completo de lo MANUAL. Las filas de otro origen (las que algun dia
+            # salgan de las conversaciones) no se tocan: el administrador no las escribio.
+            await conn.execute(
+                "DELETE FROM vendedor_perfil WHERE vendedor = $1 AND origen = 'manual'", vendedor)
+            await conn.executemany(
+                "INSERT INTO vendedor_perfil (vendedor, dimension, clave, afinidad, origen, actualizado_por) "
+                "VALUES ($1, $2, $3, $4, 'manual', $5)",
+                [(v, d, c, a, usuario) for v, d, c, a in afinidad.filas(vendedor, perfil)],
+            )
+            await conn.execute(
+                """
+                INSERT INTO vendedor_ajustes (vendedor, capacidad, notas, actualizado_por)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (vendedor) DO UPDATE
+                   SET capacidad = EXCLUDED.capacidad, notas = EXCLUDED.notas,
+                       actualizado_at = now(), actualizado_por = EXCLUDED.actualizado_por
+                """,
+                vendedor, body.capacidad, notas, usuario,
+            )
+    print(f"[perfil] {vendedor} guardado por {usuario} "
+          f"(tope={'global' if body.capacidad is None else body.capacidad})", flush=True)
+    return {"ok": True, "vendedor": vendedor, "perfil": afinidad.a_escala(perfil),
+            "capacidad": body.capacidad}

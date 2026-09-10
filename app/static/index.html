@@ -55,6 +55,7 @@
   <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m10.85 12.15 9.65-9.65M18 5l3 3M14 9l3 3"/></symbol>
   <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/></symbol>
   <symbol id="i-split" viewBox="0 0 24 24"><path d="M3 6h4l6 12h5"/><path d="M3 18h4l2.5-5"/><path d="m15 3 3 3-3 3"/><path d="m15 15 3 3-3 3"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/><path d="M1 14h6M9 8h6M17 16h6"/></symbol>
   <symbol id="i-printer" viewBox="0 0 24 24"><path d="M6 9V3h12v6"/><rect x="6" y="14" width="12" height="7"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/></symbol>
 </svg>
 
@@ -84,6 +85,9 @@
         </a>
         <a class="nav-item" href="#reparto" data-view="reparto" title="Reparto">
           <svg class="ico"><use href="#i-split"/></svg><span>Reparto</span>
+        </a>
+        <a class="nav-item" href="#vendedores" data-view="vendedores" title="Vendedores">
+          <svg class="ico"><use href="#i-sliders"/></svg><span>Vendedores</span>
         </a>
         <a class="nav-item" href="#scoreboard" data-view="scoreboard" title="Scoreboard">
           <svg class="ico"><use href="#i-chart"/></svg><span>Scoreboard</span>
@@ -282,6 +286,22 @@
             </div>
           </div>
           <div id="rp-body"></div>
+        </section>
+
+        <!-- El perfil de cada vendedor: con que clientes trabaja mejor. Es la mitad del
+             vendedor del reparto por afinidad (metodo 2); la mitad del lead ya la saca el
+             extractor. Lo rellena el administrador con las respuestas del propio vendedor. -->
+        <section id="view-vendedores" hidden>
+          <div class="view-head">
+            <div>
+              <h2 class="view-title">Vendedores</h2>
+              <p class="view-sub">Con qué clientes trabaja mejor cada uno. Es lo que usará el reparto por afinidad.</p>
+            </div>
+            <div class="view-actions">
+              <span class="count" id="vd-count"></span>
+            </div>
+          </div>
+          <div id="vd-body"></div>
         </section>
 
         <!-- La unica pantalla que cuenta EVENTOS y no leads: cada fila es «cuantas veces

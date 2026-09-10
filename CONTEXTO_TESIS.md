@@ -172,6 +172,29 @@ CREATE TABLE reparto_lotes (
   sin_asignar INTEGER NOT NULL DEFAULT 0
 );
 
+-- Perfil de afinidad del vendedor (metodo 2, app/afinidad.py): con que clientes trabaja mejor,
+-- una fila por (vendedor, dimension, clave), de 0 a 1. `origen` esta en la clave primaria para
+-- que lo calculado desde conversaciones cerradas conviva algun dia con lo que se puso a mano.
+CREATE TABLE vendedor_perfil (
+  vendedor        TEXT NOT NULL,
+  dimension       TEXT NOT NULL,   -- segmento | modulo | tamano | estilo | objecion | migracion
+  clave           TEXT NOT NULL,   -- estudio | procesa | grande | tarea | precio | concar ...
+  afinidad        REAL NOT NULL CHECK (afinidad >= 0 AND afinidad <= 1),
+  origen          TEXT NOT NULL DEFAULT 'manual',   -- manual | observado
+  actualizado_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  actualizado_por TEXT,
+  PRIMARY KEY (vendedor, dimension, clave, origen)
+);
+
+-- Ajustes por vendedor que no son afinidad: UN valor por persona, no uno por dimension.
+CREATE TABLE vendedor_ajustes (
+  vendedor        TEXT PRIMARY KEY,
+  capacidad       INTEGER CHECK (capacidad IS NULL OR capacidad >= 0),  -- NULL = global; 0 = sin tope
+  notas           TEXT,
+  actualizado_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  actualizado_por TEXT
+);
+
 CREATE TABLE reparto_asignaciones (
   id          BIGSERIAL PRIMARY KEY,
   lote_id     BIGINT NOT NULL REFERENCES reparto_lotes(id) ON DELETE CASCADE,
@@ -336,6 +359,30 @@ Aplicar pide confirmación en dos pasos.
 lead en X horas (escalonado por score), vuelve al pozo. Ahí es donde el ranking se convierte
 en dinero: el factor que más mueve la conversión es el tiempo hasta el primer contacto, no
 quién atiende. Requiere `primer_contacto_at`, que todavía no se registra.
+
+**Método 2 — afinidad vendedor–lead (planificado, no implementado):** revisión de literatura
+y diseño en [`docs/reparto-metodo-2-afinidad.md`](docs/reparto-metodo-2-afinidad.md). Resumen: el
+conocimiento del cliente y del producto es el predictor número uno (Verbeke 2011, β=.28) y es lo
+único que se puede *emparejar*; similitud demográfica, personalidad y orientación al cliente no
+sirven como clave. Tres dimensiones con datos ya extraídos (`segmento`, `modulos_interes`, tamaño
+por `num_rucs`), dos por extraer (estilo de comunicación, objeción de precio). Debe correr lead
+por lead al llegar, no por lotes (HBR 2011: una hora de retraso cuesta 7× la calificación), y se
+diseña como **experimento aleatorizado contra el método 1**, estratificado por score, porque con
+41 cerrados y **cero ventas atribuidas a un vendedor** no hay forma de estimar afinidades con
+datos: arrancan como criterio experto.
+
+**Perfil de vendedor (hecho, 10/09/2026) — la mitad del vendedor del método 2.** Pantalla
+«Vendedores»: seis preguntas por vendedor (segmento, módulo, tamaño de cuenta, estilo de
+conversación, objeción de precio, migración desde competidor), cada respuesta de 0 a 10 por
+clave (0 = le cuesta, 5 = neutro, 10 = su fuerte), más un **tope de leads abiertos por persona**
+que el reparto en serpiente ya respeta (vacío = el global `REPARTO_CAPACIDAD`, 0 = sin tope). Las
+dimensiones, sus preguntas y la validación viven en `app/afinidad.py` (`python -m app.afinidad`
+imprime el cuestionario); el backend las manda y el formulario solo las pinta. **Quien está en el
+reparto no edita perfiles** —ni el suyo—: editan el administrador, el token de API y quien no entra
+en la cola (jhon). Un perfil sin rellenar es neutro en todo: el método 2 se comportaría como un
+reparto parejo, no sesgado. Endpoints `GET /api/vendedores` y `PUT /api/vendedores/{v}/perfil`.
+Pendiente del método 2: el emparejamiento en sí (`afinidad(lead, vendedor)`, valor, reparto) y el
+selector de método en la pantalla de Reparto; después, el brazo aleatorio por lead.
 
 **CAVEAT heredado del score:** `conversion_prob` sigue sin validar contra outcomes reales
 (modelo entrenado en el proxy en inglés, ver pendiente #4). El reparto usa el ranking para
