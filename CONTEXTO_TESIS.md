@@ -381,8 +381,14 @@ imprime el cuestionario); el backend las manda y el formulario solo las pinta. *
 reparto no edita perfiles** —ni el suyo—: editan el administrador, el token de API y quien no entra
 en la cola (jhon). Un perfil sin rellenar es neutro en todo: el método 2 se comportaría como un
 reparto parejo, no sesgado. Endpoints `GET /api/vendedores` y `PUT /api/vendedores/{v}/perfil`.
-Pendiente del método 2: el emparejamiento en sí (`afinidad(lead, vendedor)`, valor, reparto) y el
-selector de método en la pantalla de Reparto; después, el brazo aleatorio por lead.
+**Método 2 implementado (10/09/2026):** `afinidad(lead, vendedor)` = media ponderada por pesos de
+lo que el perfil dice sobre las claves del lead (neutro donde falta dato); el reparto hereda los
+cupos de la serpiente y un húngaro decide quién va con quién (con perfiles neutros = serpiente
+exacta; holgura de una casilla cuando *n* no es múltiplo de *k*). Conmutador **Serpiente |
+Afinidad** en Reparto, columna «Afinidad» con el porqué, `reparto_asignaciones.afinidad`/`brazo`.
+Ensayo con 212 candidatos reales y perfiles hipotéticos: 90–96 % de los leads con segmento van a
+quien mejor lo trabaja (60–64 % por azar), brecha 0,08 frente a 0,01. Pendiente: brazo aleatorio
+por lead; `estilo_comunicacion` en el extractor; `agentes_humanos` en el transcript.
 
 **CAVEAT heredado del score:** `conversion_prob` sigue sin validar contra outcomes reales
 (modelo entrenado en el proxy en inglés, ver pendiente #4). El reparto usa el ranking para

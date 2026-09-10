@@ -872,6 +872,10 @@ main.fit .view-wrap { height: 100%; display: flex; flex-direction: column; paddi
 .rp-card.is-fuera .kpi-value { color: var(--ink-3); }
 
 .rp-pos { width: 46px; color: var(--ink-3); font-size: 12.5px; }
+/* Afinidad: el numero y, debajo, el «por que» (las claves del lead con el valor del vendedor). */
+.rp-afin { min-width: 150px; }
+.rp-afin b { display: block; font-variant-numeric: tabular-nums; }
+.rp-afin .hint { display: block; font-size: 11.5px; line-height: 1.35; }
 .rp-lead { display: inline-flex; align-items: center; gap: 9px; color: inherit; }
 .rp-lead:hover b { color: var(--brand); }
 /* La tabla puede pasarse de ancho en el movil; se desplaza dentro de su tarjeta y no

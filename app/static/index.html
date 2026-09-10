@@ -272,6 +272,12 @@
               <p class="view-sub">Los leads mejor puntuados que aún no tienen responsable, repartidos en serpiente.</p>
             </div>
             <div class="view-actions">
+              <!-- Los dos metodos, a eleccion por lote. Cambiarlo recalcula el mismo preview:
+                   asi se comparan antes de aplicar. El brazo aleatorio por lead vendra aqui. -->
+              <div class="segmented" id="rp-metodo">
+                <button type="button" data-metodo="serpiente" onclick="ponerMetodo('serpiente')">Serpiente</button>
+                <button type="button" data-metodo="afinidad" onclick="ponerMetodo('afinidad')">Afinidad</button>
+              </div>
               <div class="segmented" id="rp-tam">
                 <button type="button" data-tam="10" onclick="ponerTamLote(10)">Top 10</button>
                 <button type="button" data-tam="20" onclick="ponerTamLote(20)">Top 20</button>

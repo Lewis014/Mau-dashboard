@@ -714,6 +714,16 @@ async def lifespan(app: FastAPI):
         "CREATE INDEX IF NOT EXISTS idx_reparto_asig_lead "
         "ON reparto_asignaciones (lead_id, asignado_at DESC)"
     )
+    # Lo que hace evaluable el metodo 2: la afinidad EN EL MOMENTO del reparto (el perfil
+    # cambia despues) y el brazo que decidio ese lead. Hoy brazo = metodo del lote; cuando
+    # haya brazo aleatorio por lead, sera por asignacion y esta columna es la que lo guarda.
+    await pool.execute(
+        """
+        ALTER TABLE reparto_asignaciones
+          ADD COLUMN IF NOT EXISTS afinidad real,
+          ADD COLUMN IF NOT EXISTS brazo    text
+        """
+    )
 
     # Perfil de afinidad de cada vendedor (metodo 2, app/afinidad.py): con que clientes
     # trabaja mejor, dimension por dimension, de 0 a 1. Lo rellena el administrador con las
@@ -1734,6 +1744,10 @@ class RepartoItem(BaseModel):
     vendedor: str
     ronda: int = 1
     posicion: int = 0
+    afinidad: Optional[float] = None   # solo con metodo afinidad: a(lead, vendedor) vista
+
+
+METODOS = (reparto.METODO, afinidad.METODO)
 
 
 class RepartoBody(BaseModel):
@@ -1826,9 +1840,12 @@ async def reparto_preview(
     limit: int = Query(20, ge=1, le=200),
     vendedores: Optional[str] = Query(None, description="csv; omitir = todo el equipo"),
     capacidad: Optional[int] = Query(None, ge=0, description="tope de leads abiertos; 0 = sin tope"),
+    metodo: str = Query(reparto.METODO, description="serpiente | afinidad"),
     _=Depends(check_auth),
 ):
     """Calcula el reparto SIN aplicarlo. Nadie reparte leads a ciegas."""
+    if metodo not in METODOS:
+        raise HTTPException(status_code=400, detail=f"Método desconocido: {metodo}")
     equipo = _vendedores_validos(vendedores.split(",") if vendedores else None)
 
     pool = db.get_pool()
@@ -1837,6 +1854,7 @@ async def reparto_preview(
         carga = await _carga_abierta(conn, equipo)
         inicio = await _cursor_reparto(conn, equipo)
         ajustes = await _ajustes(conn, equipo)
+        perfiles = await _perfiles(conn, equipo) if metodo == afinidad.METODO else {}
 
     # Tope por vendedor: el de la peticion, si no el suyo (formulario de Vendedores), si no el
     # global. Huecos libres = tope menos lo que ya lleva abierto. Quien no tiene tope recibe
@@ -1845,7 +1863,10 @@ async def reparto_preview(
     topes = _topes(equipo, ajustes, capacidad)
     huecos = ({v: (len(candidatos) if topes[v] == 0 else max(0, topes[v] - carga[v]))
                for v in equipo} if any(topes.values()) else None)
-    plan = reparto.serpiente(candidatos, equipo, capacidad=huecos, inicio=inicio)
+    if metodo == afinidad.METODO:
+        plan = afinidad.reparto(candidatos, equipo, perfiles, capacidad=huecos, inicio=inicio)
+    else:
+        plan = reparto.serpiente(candidatos, equipo, capacidad=huecos, inicio=inicio)
 
     # Los datos del lead viajan pegados al plan para que la tabla se pinte sin un segundo
     # viaje: el algoritmo por si solo devuelve ids, que no se pueden enseñar a nadie.
@@ -1858,7 +1879,12 @@ async def reparto_preview(
         f["huecos"] = None if huecos is None else huecos[f["vendedor"]]
 
     return {
-        "metodo": reparto.METODO,
+        "metodo": metodo,
+        # Con afinidad, quien no tiene perfil es neutro: hay que decirlo, porque si no el
+        # reparto parece que lo tuvo en cuenta y no fue asi.
+        "sin_perfil": [v for v in equipo if v not in perfiles] if metodo == afinidad.METODO else [],
+        "afinidad_media": plan.get("afinidad_media"),
+        "beta": plan.get("beta"),
         "equipo": equipo_reparto(),   # todos los que pueden entrar, para pintar sus tarjetas
         "vendedores": equipo,         # los que participan en ESTE lote
         "abre": equipo[plan["inicio"]] if equipo else None,
@@ -1887,6 +1913,8 @@ async def reparto_aplicar(body: RepartoBody, usuario: str = Depends(check_auth))
     """
     if not body.asignaciones:
         raise HTTPException(status_code=400, detail="No hay asignaciones que aplicar")
+    if body.metodo not in METODOS:
+        raise HTTPException(status_code=400, detail=f"Método desconocido: {body.metodo}")
     equipo = _vendedores_validos([a.vendedor for a in body.asignaciones])
 
     vistos: set[str] = set()
@@ -1925,7 +1953,8 @@ async def reparto_aplicar(body: RepartoBody, usuario: str = Depends(check_auth))
                     normalize_tags(tags + [a.vendedor]), a.lead_id)
                 aplicadas.append({"lead_id": a.lead_id, "vendedor": a.vendedor,
                                   "ronda": a.ronda, "posicion": a.posicion,
-                                  "score": fila["conversion_prob"]})
+                                  "score": fila["conversion_prob"],
+                                  "afinidad": a.afinidad})
 
             # El lote se guarda aunque no se haya aplicado nada: que un reparto saliera
             # entero en falso tambien es informacion, y el cursor tiene que avanzar igual
@@ -1943,9 +1972,10 @@ async def reparto_aplicar(body: RepartoBody, usuario: str = Depends(check_auth))
             if aplicadas:
                 await conn.executemany(
                     "INSERT INTO reparto_asignaciones "
-                    "(lote_id, lead_id, vendedor, ronda, posicion, score) "
-                    "VALUES ($1, $2, $3, $4, $5, $6)",
-                    [(lote, a["lead_id"], a["vendedor"], a["ronda"], a["posicion"], a["score"])
+                    "(lote_id, lead_id, vendedor, ronda, posicion, score, afinidad, brazo) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                    [(lote, a["lead_id"], a["vendedor"], a["ronda"], a["posicion"], a["score"],
+                      a["afinidad"], body.metodo)
                      for a in aplicadas],
                 )
 

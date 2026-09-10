@@ -2034,11 +2034,17 @@ $('q-inp').addEventListener('blur', () => setTimeout(ocultarResultados, 150));
 let repartoEquipo = [];
 let repartoPlan = null;
 let repartoTam = 20;
+let repartoMetodo = 'serpiente';   // serpiente | afinidad, a eleccion por lote
 let repartoFuera = new Set();   // vendedores excluidos de este lote (vacaciones, baja...)
 let repartoConfirma = null;     // temporizador de la confirmacion en dos pasos
 
 function ponerTamLote(n) {
   repartoTam = n;
+  loadReparto();
+}
+
+function ponerMetodo(m) {
+  repartoMetodo = m;
   loadReparto();
 }
 
@@ -2061,7 +2067,7 @@ async function loadReparto() {
   const dentro = repartoEquipo.filter(v => !repartoFuera.has(v));
   const nadie = !primeraVez && !dentro.length;
 
-  const params = new URLSearchParams({ limit: repartoTam });
+  const params = new URLSearchParams({ limit: repartoTam, metodo: repartoMetodo });
   if (dentro.length && repartoFuera.size) params.set('vendedores', dentro.join(','));
 
   const plan = await api('GET', '/reparto/preview?' + params);
@@ -2071,6 +2077,8 @@ async function loadReparto() {
 
   document.querySelectorAll('#rp-tam button').forEach(b =>
     b.classList.toggle('active', Number(b.dataset.tam) === repartoTam));
+  document.querySelectorAll('#rp-metodo button').forEach(b =>
+    b.classList.toggle('active', b.dataset.metodo === repartoMetodo));
   $('rp-aplicar').disabled = !repartoPlan.asignaciones.length;
 
   el.innerHTML = repartoCuerpo(repartoPlan, nadie ? [] : (dentro.length ? dentro : repartoEquipo));
@@ -2092,9 +2100,10 @@ function repartoCuerpo(p, dentro) {
     const f = porVendedor[v];
     const fuera = repartoFuera.has(v);
     const valor = f && f.valor != null ? f.valor.toFixed(2) : '0.00';
+    const afin = (f && f.afinidad_media != null) ? ` · afinidad ${(f.afinidad_media * 10).toFixed(1)}` : '';
     const pie = fuera
       ? 'fuera de este reparto'
-      : `${valor} esperadas · ${f ? f.abiertos : 0} abierto${f && f.abiertos === 1 ? '' : 's'}`;
+      : `${valor} esperadas · ${f ? f.abiertos : 0} abierto${f && f.abiertos === 1 ? '' : 's'}${afin}`;
     return `<button type="button" class="kpi kpi-link rp-card${fuera ? ' is-fuera' : ''}"
         onclick="alternarVendedor('${esc(v)}')"
         title="${fuera ? 'Volver a incluir a ' + cap(v) : 'Dejar a ' + cap(v) + ' fuera de este reparto'}">
@@ -2113,11 +2122,21 @@ function repartoCuerpo(p, dentro) {
     : tv.every(x => x === tv[0]) ? `Tope de ${tv[0]} leads abiertos por persona.`
     : 'Topes: ' + Object.entries(topes).map(([v, t]) => `${cap(v)} ${t || 'sin tope'}`).join(' · ') + '.';
   // Lo que hay que entender para fiarse del reparto: quien abre y como de parejo salio.
+  const esAfinidad = p.metodo === 'afinidad';
+  const sinPerfil = (p.sin_perfil || []).map(cap);
+  const explicacion = esAfinidad
+    ? `Cada lead va a quien mejor encaja con lo que se sabe de él, manteniendo las carteras tan
+       parejas como en serpiente: la afinidad decide <b>quién</b>, no <b>cuántos</b>. Afinidad media
+       del lote: <b>${p.afinidad_media != null ? (p.afinidad_media * 10).toFixed(1) : '—'}</b> sobre 10.`
+    : `Abre <b>${esc(cap(p.abre || ''))}</b> y el orden se invierte en cada ronda, así que quien
+       pierde el primer puesto de una ronda gana el de la siguiente. ${p.rondas} ronda${p.rondas === 1 ? '' : 's'}.`;
+  const avisoPerfil = esAfinidad && sinPerfil.length
+    ? `<br><b>Sin perfil: ${esc(sinPerfil.join(', '))}.</b> Para ${sinPerfil.length === 1 ? 'esa persona' : 'esas personas'} todo es neutro: el reparto no ${sinPerfil.length === 1 ? 'la' : 'las'} tuvo en cuenta de verdad.`
+    : '';
   const cabecera = `<div class="notice" style="margin-bottom:14px">${ico('info')}<div class="notice-body">
-    Abre <b>${esc(cap(p.abre || ''))}</b> y el orden se invierte en cada ronda, así que quien
-    pierde el primer puesto de una ronda gana el de la siguiente. ${p.rondas} ronda${p.rondas === 1 ? '' : 's'}.
+    ${explicacion}
     La diferencia entre la mejor y la peor cartera es de <b>${(p.brecha || 0).toFixed(2)}</b> conversiones esperadas.
-    ${textoTope}
+    ${textoTope}${avisoPerfil}
   </div></div>`;
 
   const filas = p.asignaciones.map(a => {
@@ -2129,7 +2148,9 @@ function repartoCuerpo(p, dentro) {
       <td><a class="rp-lead" href="#detail/${esc(a.lead_id)}">${avatar(nombreLead(l), 'avatar-sm', a.lead_id)}
         <span><b>${esc(nombre)}</b>${l.company_name ? `<span class="hint"> · ${esc(l.company_name)}</span>` : ''}</span></a></td>
       <td>${pct != null ? scoreRing(pct) : '<span class="hint">—</span>'}</td>
-      <td class="num hint rp-ronda">${a.ronda}</td>
+      ${esAfinidad
+        ? `<td class="rp-afin"><b>${a.afinidad != null ? (a.afinidad * 10).toFixed(1) : '—'}</b><span class="hint">${esc(a.porque || '')}</span></td>`
+        : `<td class="num hint rp-ronda">${a.ronda}</td>`}
       <td><span class="badge badge-${TAG_CLASS[a.vendedor] || 'slate'}">${avatar(cap(a.vendedor), 'avatar-sm')}${esc(cap(a.vendedor))}</span></td>
     </tr>`;
   }).join('');
@@ -2148,7 +2169,7 @@ function repartoCuerpo(p, dentro) {
 
   return `<div class="kpi-grid">${tarjetas}</div>${cabecera}
     <div class="card"><div class="rp-scroll"><table class="table-plain">
-      <thead><tr><th class="num">#</th><th>Lead</th><th>P(conv.)</th><th class="num rp-ronda">Ronda</th><th>Responsable</th></tr></thead>
+      <thead><tr><th class="num">#</th><th>Lead</th><th>P(conv.)</th>${esAfinidad ? '<th>Afinidad</th>' : '<th class="num rp-ronda">Ronda</th>'}<th>Responsable</th></tr></thead>
       <tbody>${filas}</tbody>
     </table></div></div>${espera}`;
 }
@@ -2192,6 +2213,7 @@ async function confirmarReparto(btn) {
   const res = await api('POST', '/reparto/aplicar', {
     asignaciones: repartoPlan.asignaciones.map(a => ({
       lead_id: a.lead_id, vendedor: a.vendedor, ronda: a.ronda, posicion: a.posicion,
+      afinidad: a.afinidad == null ? null : a.afinidad,
     })),
     metodo: repartoPlan.metodo,
     inicio: repartoPlan.inicio,

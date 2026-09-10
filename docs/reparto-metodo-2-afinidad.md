@@ -197,24 +197,52 @@ afinidad plena (arrancar en 0,25). Restar la media hace que la suma de valor de 
 dependa de la afinidad —solo *quién* lo lleva— y `β` es precisamente la cantidad que el
 experimento estima.
 
-**Reparto por lotes (el atraso).** Maximizar `Σ valor(l, v)` con tope de capacidad y equilibrio
-de cantidades `|n_v − n_w| ≤ 1`. Es el problema de asignación (Kuhn 1955, algoritmo húngaro) con
-cada vendedor replicado ⌈n/k⌉ veces. Con **dos vendedores** tiene solución cerrada: ordenar los
-leads por `Δ(l) = valor(l, A) − valor(l, B)` y darle a A la mitad con mayor Δ. No hace falta
-ninguna librería.
+**Reparto por lotes (el atraso) — implementado en `app/afinidad.py`.** El método 2 *hereda* la
+paridad de la serpiente y solo decide quién va con quién: los cupos por vendedor se cuentan
+igual que en `reparto.py` (por rondas, respetando topes), y sobre esos cupos el problema de
+asignación (Kuhn 1955, algoritmo húngaro en Python puro, O(n³): 200 leads en 0,03 s) maximiza
+`Σ valor(l, v)`. Las casillas van en orden de serpiente y un desempate ínfimo (10⁻⁹·|i−j|) hace
+que, con afinidades iguales, el lead *i* caiga en la casilla *i*: **con perfiles neutros el
+resultado es exactamente la serpiente**, comprobado lead por lead. Cuando *n* no es múltiplo del
+número de vendedores hay una casilla de holgura para quien no está al tope, así el lead sobrante
+lo decide la afinidad y no el turno, y las carteras siguen difiriendo como mucho en 1 (con 20
+leads y 2 vendedores no hay holgura: 10 y 10). El ranking decide quién espera cuando no caben
+todos, igual que en la serpiente. Verificado contra fuerza bruta (los 70 repartos 4/4 de 8
+leads) y con 3 vendedores (7/7/6).
 
 **Lead por lead (lo que entra).** `argmax_v [ valor(l, v) − γ · (carga_v − carga_media) ]`
 entre quienes tienen hueco. El término `γ` es el equilibrio por carga acumulada que el método 1
 no tiene, y con él el reparto en vivo converge a carteras parejas aunque no haya lotes.
+
+**Ensayo con los candidatos reales (10/09/2026, 212 leads, perfiles hipotéticos).** Entre los
+candidatos —que tienen transcript y por eso extracción rica— la cobertura es mucho mejor que en
+la base entera: `segmento` 95 %, `modulo` 79 %, `tamano` 54 %; solo 4 de 212 no tienen ninguna
+clave. Con un perfil «fuerte» y complementario (Alyssa estudios/Procesa/grandes, Diego
+independientes/Comunica/pequeñas), en un Top 20 el **90 %** de los leads con segmento conocido va
+a quien mejor lo trabaja (la serpiente acierta el 60 % por azar); en un Top 50, **96 % frente a
+64 %**. El coste en paridad es nulo: brecha 0,08 frente a 0,01, con el mismo valor total. Con un
+solo perfil rellenado (solo Alyssa) el resultado es el mismo: el otro recibe por exclusión. Con
+perfiles «tibios» (7/5, 6/5) también: la asignación depende del *orden* de las afinidades, no de
+su magnitud. Y el tope por vendedor manda sobre todo lo demás, como debe: con 21/3 abiertos y
+tope 25, Alyssa recibe 4 de 20.
+
+Dos cosas que hay que saber al leer los números. Uno: **la afinidad mostrada está comprimida
+hacia 5**: las dimensiones de nivel B (4 de 12 de peso) no tienen dato del lead y cuentan
+neutro, así que hoy un encaje perfecto ronda 7–7,5 sobre 10, no 10. Es a propósito —un lead con
+más datos pesa más en la asignación— pero el número se lee en relativo. Dos: con dos vendedores y
+carteras forzadas a 10/10, la afinidad solo puede *intercambiar* leads entre ellos; en el Top 50
+cambian de manos 20 de 50 respecto a la serpiente.
 
 ## 8. Cómo se evalúa, y por qué el método 2 es un experimento
 
 Nada de lo anterior está demostrado en este mercado. El diseño honesto —y el defendible ante
 jurado— es medirlo:
 
-- **Aleatorizar por lead** entre dos brazos: *serpiente/rotación* (método 1, el control) y
-  *afinidad* (método 2). El brazo se guarda por asignación. Con exploración del 100 % en el
-  control no hace falta ε-greedy aparte: el control **es** la exploración.
+- **Hoy: los dos métodos a elección por lote** (conmutador Serpiente | Afinidad en la pantalla de
+  Reparto), para probar. `reparto_lotes.metodo` y `reparto_asignaciones.brazo`/`afinidad` ya
+  registran con qué se decidió cada lead. **Después: aleatorizar por lead** entre los dos brazos.
+  Con exploración del 100 % en el control no hace falta ε-greedy aparte: el control **es** la
+  exploración. Mientras se elija a mano, el resultado se confunde con la elección.
 - **Comparar a igual score.** Como `conversion_prob` correlaciona con el resultado por
   construcción, quien reciba leads mejor puntuados mostrará mejor tasa sin importar la afinidad.
   La comparación va estratificada por deciles de `conversion_prob`, o como *lift* sobre lo
@@ -250,9 +278,14 @@ ALTER TABLE reparto_asignaciones ADD COLUMN afinidad real;
 ALTER TABLE reparto_asignaciones ADD COLUMN brazo text;   -- serpiente | afinidad
 ```
 
-Lado del lead: un enum `estilo_comunicacion` (`tarea` · `relacion` · null) en el esquema del
-extractor de `backfill.py`, y una re-extracción (552 llamadas al modelo). Hasta entonces el nivel
-B queda en `m_k = 0,5` y no estorba.
+Hecho (10/09/2026): tablas `vendedor_perfil` y `vendedor_ajustes`, columnas `afinidad` y
+`brazo`, pantalla «Vendedores», conmutador de método en Reparto con columna «Afinidad» que
+explica el porqué de cada asignación (las claves del lead con el valor del vendedor).
+
+Pendiente del lado del lead: un enum `estilo_comunicacion` (`tarea` · `relacion` · null) en el
+esquema del extractor de `backfill.py`, y una re-extracción (552 llamadas al modelo). Hasta
+entonces el nivel B queda en `m_k = 0,5` y no estorba. Y del lado del vendedor, guardar quién
+escribió cada turno (`agentes_humanos`): el transcript dice `AGENTE:` sin nombre.
 
 Pantalla: un formulario de perfil por vendedor (seis controles deslizantes, no más, por §3) y,
 en la vista de Reparto, un tercer botón junto a *Top 10/20/50*: **Afinidad** contra
