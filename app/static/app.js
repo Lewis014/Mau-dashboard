@@ -2026,7 +2026,11 @@ $('q-inp').addEventListener('blur', () => setTimeout(ocultarResultados, 150));
    El ranking dice a quien atender primero; esta vista dice QUIEN lo atiende. Siempre se
    PREVISUALIZA antes de aplicar: aplicar escribe el responsable de leads reales, y de esa
    etiqueta salen las alertas por correo de cada persona. */
-const VENDEDORES = TAG_GROUPS.find(g => g.key === 'responsable').tags.map(t => t.v);
+/* El equipo del reparto lo dice el backend (REPARTO_VENDEDORES), no se deduce de
+   TAG_GROUPS: llevar un lead y entrar en el reparto no son lo mismo — hay quien puede
+   ser responsable de un lead sin que le toque cola. Hasta la primera respuesta no se
+   sabe quien es, asi que arranca vacio. */
+let repartoEquipo = [];
 let repartoPlan = null;
 let repartoTam = 20;
 let repartoFuera = new Set();   // vendedores excluidos de este lote (vacaciones, baja...)
@@ -2049,21 +2053,26 @@ async function loadReparto() {
   cancelarConfirmacionReparto();
   if (!el.children.length) el.innerHTML = '<div class="loading"><span class="spinner"></span>Cargando…</div>';
 
-  const dentro = VENDEDORES.filter(v => !repartoFuera.has(v));
-  const params = new URLSearchParams({ limit: repartoTam });
-  if (repartoFuera.size) params.set('vendedores', dentro.join(','));
+  // En la primera carga todavia no se sabe quien es el equipo: se pide sin filtro y la
+  // respuesta lo dice. Con todo el mundo fuera no hay reparto, pero se pregunta igual para
+  // poder pintar las tarjetas y volver a incluir a alguien.
+  const primeraVez = !repartoEquipo.length;
+  const dentro = repartoEquipo.filter(v => !repartoFuera.has(v));
+  const nadie = !primeraVez && !dentro.length;
 
-  // Con todo el equipo fuera no hay a quien repartir; se pregunta igual (sin el filtro)
-  // para poder pintar las tarjetas y que se pueda volver a meter a alguien.
-  const plan = await api('GET', '/reparto/preview?' + (dentro.length ? params : new URLSearchParams({ limit: repartoTam })));
+  const params = new URLSearchParams({ limit: repartoTam });
+  if (dentro.length && repartoFuera.size) params.set('vendedores', dentro.join(','));
+
+  const plan = await api('GET', '/reparto/preview?' + params);
   if (!plan) return;
-  repartoPlan = dentro.length ? plan : { ...plan, asignaciones: [], resumen: [], sin_asignar: [] };
+  repartoEquipo = plan.equipo || plan.vendedores || [];
+  repartoPlan = nadie ? { ...plan, asignaciones: [], resumen: [], sin_asignar: [] } : plan;
 
   document.querySelectorAll('#rp-tam button').forEach(b =>
     b.classList.toggle('active', Number(b.dataset.tam) === repartoTam));
   $('rp-aplicar').disabled = !repartoPlan.asignaciones.length;
 
-  el.innerHTML = repartoCuerpo(repartoPlan, dentro);
+  el.innerHTML = repartoCuerpo(repartoPlan, nadie ? [] : (dentro.length ? dentro : repartoEquipo));
 }
 
 function repartoCuerpo(p, dentro) {
@@ -2078,7 +2087,7 @@ function repartoCuerpo(p, dentro) {
   }
 
   const porVendedor = Object.fromEntries(p.resumen.map(f => [f.vendedor, f]));
-  const tarjetas = VENDEDORES.map(v => {
+  const tarjetas = repartoEquipo.map(v => {
     const f = porVendedor[v];
     const fuera = repartoFuera.has(v);
     const valor = f && f.valor != null ? f.valor.toFixed(2) : '0.00';

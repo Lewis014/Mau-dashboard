@@ -735,6 +735,18 @@ async def lifespan(app: FastAPI):
     else:
         print("[diario] desactivado (SYNC_PLANES_HORA=-1)", flush=True)
 
+    # Quien entra en el reparto, dicho en voz alta al arrancar: un nombre mal escrito aqui
+    # deja a esa persona sin su parte del lote y no lo notaria nadie hasta contar los leads.
+    equipo = equipo_reparto()
+    if (ajenos := sorted(set(REPARTO_VENDEDORES) - set(TAG_GROUPS["responsable"]))):
+        print(f"[reparto] AVISO: {', '.join(ajenos)} no son etiquetas de responsable validas "
+              f"y se ignoran; revisa REPARTO_VENDEDORES", flush=True)
+    fuera = [v for v in TAG_GROUPS["responsable"] if v not in equipo]
+    print(f"[reparto] {reparto.METODO} entre {', '.join(equipo) or '(nadie: no se puede repartir)'}"
+          + (f" | fuera del reparto: {', '.join(fuera)}" if fuera else "")
+          + (f" | tope {REPARTO_CAPACIDAD} abiertos" if REPARTO_CAPACIDAD else " | sin tope"),
+          flush=True)
+
     from app.alertas import estado_config
     print(f"[alertas] {estado_config()}", flush=True)
 
@@ -1669,6 +1681,16 @@ async def score_lead(lead_id: str, _=Depends(check_auth)):
 # medido. Se sube cuando el equipo sepa cuantos puede llevar cada uno de verdad.
 REPARTO_CAPACIDAD = int(os.getenv("REPARTO_CAPACIDAD", "0"))
 
+# Quien entra en el reparto automatico. Es un SUBCONJUNTO de TAG_GROUPS["responsable"], y la
+# distincion importa: llevar un lead y estar en la cola de reparto no son lo mismo. Jhon es
+# administrador, no vendedor — puede quedarse con un lead puntual (por eso sigue siendo una
+# etiqueta valida), pero no le toca su parte del lote.
+# El defecto son los vendedores de hoy; la variable existe para cuando el equipo crezca.
+# OJO: sumar a alguien nuevo pide ademas anadirlo a TAG_GROUPS aqui y en app/static/app.js,
+# porque de ahi salen la etiqueta, su color y los filtros.
+REPARTO_VENDEDORES = [v.strip().lower() for v in
+                      os.getenv("REPARTO_VENDEDORES", "alyssa,diego").split(",") if v.strip()]
+
 # Un lead cerrado ya no se reparte: no queda nada que trabajar en el.
 OUTCOME_CERRADO = ("cliente", "perdido")
 
@@ -1690,14 +1712,24 @@ class RepartoBody(BaseModel):
     capacidad: Optional[int] = None
 
 
+def equipo_reparto() -> list[str]:
+    """Los vendedores del reparto, en el orden de TAG_GROUPS: el reparto debe ser reproducible.
+
+    Se cruza con TAG_GROUPS a proposito: un nombre en REPARTO_VENDEDORES que no sea una
+    etiqueta valida no podria escribirse en el lead, asi que repartirle seria mentir.
+    """
+    return [v for v in TAG_GROUPS["responsable"] if v in REPARTO_VENDEDORES]
+
+
 def _vendedores_validos(crudos: Optional[list[str]]) -> list[str]:
-    """Filtra contra TAG_GROUPS y CONSERVA su orden: el reparto tiene que ser reproducible."""
-    equipo = TAG_GROUPS["responsable"]
+    """Filtra contra el equipo de reparto y conserva su orden."""
+    equipo = equipo_reparto()
     if not crudos:
         return list(equipo)
     elegidos = {v.strip().lower() for v in crudos if v.strip()}
     if (ajenos := sorted(elegidos - set(equipo))):
-        raise HTTPException(status_code=400, detail=f"No son vendedores: {', '.join(ajenos)}")
+        raise HTTPException(status_code=400,
+                            detail=f"No entran en el reparto: {', '.join(ajenos)}")
     return [v for v in equipo if v in elegidos]
 
 
@@ -1787,7 +1819,8 @@ async def reparto_preview(
 
     return {
         "metodo": reparto.METODO,
-        "vendedores": equipo,
+        "equipo": equipo_reparto(),   # todos los que pueden entrar, para pintar sus tarjetas
+        "vendedores": equipo,         # los que participan en ESTE lote
         "abre": equipo[plan["inicio"]] if equipo else None,
         "inicio": plan["inicio"],
         "rondas": plan["rondas"],

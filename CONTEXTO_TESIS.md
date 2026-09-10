@@ -291,6 +291,15 @@ arrastra. `REPARTO_CAPACIDAD` solo corta por arriba. Equilibrar por carga acumul
 lead que entra a quien tenga el valor acumulado más bajo, que además funciona en vivo y no
 por lotes— sería el método 2.
 
+**Quién entra al reparto:** `REPARTO_VENDEDORES` (env, hoy `alyssa,diego`), que es un
+**subconjunto** de `TAG_GROUPS["responsable"]`. La distinción importa: llevar un lead y estar
+en la cola de reparto no son lo mismo. **Jhon es administrador, no vendedor** — puede quedarse
+con un lead puntual, por eso sigue siendo una etiqueta de responsable válida, pero no le toca
+su parte del lote y el endpoint rechaza asignárselo. Con dos personas la serpiente degenera en
+alternancia pura (A B / B A), que es el reparto perfectamente parejo. Sumar a alguien pide
+además añadirlo a `TAG_GROUPS` en `main.py` y en `app.js`, de donde salen etiqueta, color y
+filtros; el arranque lo dice en el log (`[reparto] serpiente entre … | fuera del reparto: …`).
+
 **Qué entra al reparto:** leads con `conversion_prob`, sin etiqueta de responsable, sin
 cerrar (`cliente`/`perdido`) y con `is_test = false`. Los que ya tienen dueño se excluyen a
 propósito: reasignar por lotes le quitaría a alguien un lead que quizá ya trabajó.
@@ -304,6 +313,8 @@ nadie ha medido dejaría leads sin repartir por una cifra falsa.
 **Flujo y endpoints.** Siempre se previsualiza antes de aplicar; aplicar escribe el
 responsable de leads reales y de esa etiqueta salen las alertas por correo de cada persona.
 - `GET /api/reparto/preview?limit=&vendedores=&capacidad=` — calcula sin escribir nada.
+  Devuelve `equipo` (todos los del reparto, para pintar sus tarjetas) y `vendedores` (los que
+  participan en ESE lote): el frontend no deduce el equipo, se lo dice el backend.
 - `POST /api/reparto/aplicar` — recibe **el lote que se vio**, no unos filtros para
   recalcular. Revalida lead por lead (`FOR UPDATE`); lo que cambió entre mirar y aplicar se
   omite diciendo por qué, y el resto se aplica igual. No toca `outcome` ni `outcome_date`: el
