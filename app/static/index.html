@@ -54,6 +54,7 @@
   <symbol id="i-filter" viewBox="0 0 24 24"><path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z"/></symbol>
   <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m10.85 12.15 9.65-9.65M18 5l3 3M14 9l3 3"/></symbol>
   <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/></symbol>
+  <symbol id="i-split" viewBox="0 0 24 24"><path d="M3 6h4l6 12h5"/><path d="M3 18h4l2.5-5"/><path d="m15 3 3 3-3 3"/><path d="m15 15 3 3-3 3"/></symbol>
   <symbol id="i-printer" viewBox="0 0 24 24"><path d="M6 9V3h12v6"/><rect x="6" y="14" width="12" height="7"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/></symbol>
 </svg>
 
@@ -80,6 +81,9 @@
         <a class="nav-item" href="#etiquetado" data-view="etiquetado" title="Etiquetado">
           <svg class="ico"><use href="#i-tag"/></svg><span>Etiquetado</span>
           <span class="nav-badge" id="tag-badge" hidden></span>
+        </a>
+        <a class="nav-item" href="#reparto" data-view="reparto" title="Reparto">
+          <svg class="ico"><use href="#i-split"/></svg><span>Reparto</span>
         </a>
         <a class="nav-item" href="#scoreboard" data-view="scoreboard" title="Scoreboard">
           <svg class="ico"><use href="#i-chart"/></svg><span>Scoreboard</span>
@@ -252,6 +256,32 @@
               <div class="empty"><svg class="ico"><use href="#i-message"/></svg><p>Elige un lead de la lista para leer su conversación.</p></div>
             </div>
           </div>
+        </section>
+
+        <!-- El ranking dice a quien atender primero; esta vista dice QUIEN lo atiende.
+             Siempre se mira antes de aplicar: repartir escribe el responsable de leads
+             reales y de ahi salen las alertas por correo de cada persona. -->
+        <section id="view-reparto" hidden>
+          <div class="view-head">
+            <div>
+              <h2 class="view-title">Reparto</h2>
+              <p class="view-sub">Los leads mejor puntuados que aún no tienen responsable, repartidos en serpiente.</p>
+            </div>
+            <div class="view-actions">
+              <div class="segmented" id="rp-tam">
+                <button type="button" data-tam="10" onclick="ponerTamLote(10)">Top 10</button>
+                <button type="button" data-tam="20" onclick="ponerTamLote(20)">Top 20</button>
+                <button type="button" data-tam="50" onclick="ponerTamLote(50)">Top 50</button>
+              </div>
+              <button class="btn btn-secondary btn-sm" onclick="loadReparto()">
+                <svg class="ico ico-sm"><use href="#i-refresh"/></svg>Recalcular
+              </button>
+              <button class="btn btn-primary btn-sm" id="rp-aplicar" onclick="aplicarReparto()" disabled>
+                <svg class="ico ico-sm"><use href="#i-split"/></svg>Aplicar reparto
+              </button>
+            </div>
+          </div>
+          <div id="rp-body"></div>
         </section>
 
         <!-- La unica pantalla que cuenta EVENTOS y no leads: cada fila es «cuantas veces

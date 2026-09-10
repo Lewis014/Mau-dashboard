@@ -154,6 +154,34 @@ CREATE TABLE lead_alertas (
   enviada_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (lead_id, tipo, clave)
 );
+
+-- Reparto de leads entre vendedores (app/reparto.py). Existen por dos razones: de aqui sale
+-- el cursor de rotacion de la serpiente (`abrio` = quien abrio el lote anterior), y la
+-- etiqueta de responsable se SOBRESCRIBE, asi que sin historial se pierde quien recibio
+-- que, cuando y en que puesto del ranking. Sin eso no se puede evaluar el reparto despues.
+CREATE TABLE reparto_lotes (
+  id          BIGSERIAL PRIMARY KEY,
+  metodo      TEXT NOT NULL,           -- 'serpiente' (metodo 1)
+  creado_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  autor       TEXT NOT NULL,           -- del token de sesion, no del cliente
+  inicio      INTEGER NOT NULL,        -- indice del asiento que abrio la ronda 1
+  abrio       TEXT,                    -- y su NOMBRE: el equipo cambia entre lotes
+  vendedores  TEXT[] NOT NULL DEFAULT '{}',
+  capacidad   INTEGER,                 -- tope aplicado; NULL/0 = sin tope
+  leads       INTEGER NOT NULL DEFAULT 0,
+  sin_asignar INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE reparto_asignaciones (
+  id          BIGSERIAL PRIMARY KEY,
+  lote_id     BIGINT NOT NULL REFERENCES reparto_lotes(id) ON DELETE CASCADE,
+  lead_id     VARCHAR(255) NOT NULL REFERENCES leads_dataset(lead_id) ON DELETE CASCADE,
+  vendedor    TEXT NOT NULL,
+  ronda       INTEGER NOT NULL,
+  posicion    INTEGER NOT NULL,        -- puesto en el ranking del lote
+  score       REAL,                    -- el conversion_prob del momento del reparto
+  asignado_at TIMESTAMPTZ NOT NULL DEFAULT now()   -- base del futuro SLA de primer contacto
+);
 ```
 
 ### `n8n_chat_histories` (existente, de n8n)
@@ -229,6 +257,79 @@ FROM leads_dataset WHERE is_test = false;
 - **Dashboard:** columna **P(conv.)** con barra + % (verde ≥60, ámbar ≥30, gris), botón "Calcular" por lead, y orden "Prob. conversión".
 - **Despliegue:** copiar `leads_model.json` a `mau-dashboard/models/` en el servidor, `OPENAI_API_KEY` en `.env`, `docker compose up -d --build`, luego `docker compose exec dashboard python -m app.score_leads`.
 - **CAVEAT:** el modelo está entrenado en el proxy (inglés) y **aún no validado** en los reales (español). El score es utilizable pero su calidad se confirma con la sección 7 una vez existan las etiquetas.
+
+### Reparto de leads entre vendedores — Método 1: serpiente (`app/reparto.py`)
+
+El ranking de `conversion_prob` dice a quién atender primero; el reparto dice **quién** lo
+atiende. Hasta ahora el responsable se ponía a mano como etiqueta.
+
+**El método.** Se ordenan los candidatos por probabilidad y se reparten por rondas
+invirtiendo el orden en cada una (*snake draft*): `A B C / C B A / A B C…`. El asiento que
+abre la ronda 1 **rota un puesto en cada lote**, y ese cursor sale del historial
+(`reparto_lotes.abrio`), no de una tabla de ajustes.
+
+**Por qué invertir, con números.** Sobre un top 20 con una curva de scores realista (0.86 →
+0.30, 10.97 conversiones esperadas en total), las tres carteras salen 7/7/6 leads con valores
+3.79 / 3.74 / 3.44. La brecha entre el mejor y el peor es **0.35**; con round-robin simple
+(1-2-3 siempre) es **0.67**. Ninguno de los dos crea ni destruye valor —la suma es la misma—,
+solo deciden quién se lo lleva; la serpiente lo reparte el doble de parejo. Reproducible con
+`python -m app.reparto`, que imprime el reparto, las carteras y ambas brechas.
+
+**Por qué no algo más sofisticado.** Maximizar conversiones totales es formalmente un
+problema de asignación (húngaro / min-cost flow) sobre una matriz `valor[lead][vendedor]`.
+Eso exige saber que un vendedor cierra mejor cierto tipo de lead, y con 3 vendedores y ~53
+leads etiquetables esa matriz es ruido: harían falta del orden de 30–50 cierres **por
+vendedor y por segmento**. Además tiene una trampa de realimentación: dar los buenos leads al
+mejor closer sube su tasa, lo que "justifica" seguir dándoselos. Y como `conversion_prob`
+correlaciona con el resultado por construcción, quien reciba leads mejor puntuados mostrará
+mejor tasa sin importar su habilidad — comparar vendedores exige hacerlo **a igual score**.
+Un método así necesitaría exploración deliberada (ε-greedy o Thompson sampling) para que los
+datos no confirmen la propia decisión.
+
+**Límite conocido del método 1:** reparte partes IGUALES; no mira la carga que cada uno ya
+arrastra. `REPARTO_CAPACIDAD` solo corta por arriba. Equilibrar por carga acumulada —dar cada
+lead que entra a quien tenga el valor acumulado más bajo, que además funciona en vivo y no
+por lotes— sería el método 2.
+
+**Qué entra al reparto:** leads con `conversion_prob`, sin etiqueta de responsable, sin
+cerrar (`cliente`/`perdido`) y con `is_test = false`. Los que ya tienen dueño se excluyen a
+propósito: reasignar por lotes le quitaría a alguien un lead que quizá ya trabajó.
+
+**Capacidad.** `REPARTO_CAPACIDAD` (env, por defecto **0 = sin tope**) es el máximo de leads
+abiertos por persona. Los huecos libres se calculan contra la carga real. Lo que no cabe se
+queda sin asignar y se muestra: con 9/4/6 abiertos y tope 12, un top 20 se reparte 3/8/6 y
+tres leads esperan al próximo lote. El defecto es 0 a propósito — inventar aquí un número que
+nadie ha medido dejaría leads sin repartir por una cifra falsa.
+
+**Flujo y endpoints.** Siempre se previsualiza antes de aplicar; aplicar escribe el
+responsable de leads reales y de esa etiqueta salen las alertas por correo de cada persona.
+- `GET /api/reparto/preview?limit=&vendedores=&capacidad=` — calcula sin escribir nada.
+- `POST /api/reparto/aplicar` — recibe **el lote que se vio**, no unos filtros para
+  recalcular. Revalida lead por lead (`FOR UPDATE`); lo que cambió entre mirar y aplicar se
+  omite diciendo por qué, y el resto se aplica igual. No toca `outcome` ni `outcome_date`: el
+  responsable no es un hito del embudo y fecharlo como tal falsearía el Scoreboard.
+- `GET /api/reparto/historial` — los últimos lotes.
+
+**Tablas nuevas:** `reparto_lotes` (método, autor, quién abrió, equipo, capacidad) y
+`reparto_asignaciones` (lote, lead, vendedor, ronda, puesto, score, fecha). Existen por dos
+razones: de ahí sale el cursor de rotación, y la etiqueta de responsable se sobrescribe —sin
+historial no se puede evaluar después si el reparto funcionó, ni medir desde cuándo lo tiene
+alguien, que es la base de un futuro SLA de primer contacto.
+
+**Pantalla «Reparto»:** tarjeta por vendedor (se pulsa para dejar a alguien fuera del lote de
+hoy, p. ej. vacaciones), aviso con quién abre y la brecha resultante, tabla del lote con
+puesto/lead/probabilidad/ronda/responsable, y la lista de los que se quedan esperando.
+Aplicar pide confirmación en dos pasos.
+
+**Pendiente, y es lo que más pesa:** el SLA de reasignación — si el responsable no toca el
+lead en X horas (escalonado por score), vuelve al pozo. Ahí es donde el ranking se convierte
+en dinero: el factor que más mueve la conversión es el tiempo hasta el primer contacto, no
+quién atiende. Requiere `primer_contacto_at`, que todavía no se registra.
+
+**CAVEAT heredado del score:** `conversion_prob` sigue sin validar contra outcomes reales
+(modelo entrenado en el proxy en inglés, ver pendiente #4). El reparto usa el ranking para
+decidir el **orden** y el equilibrio de las carteras, que es un uso de bajo riesgo, y el
+historial que genera es justamente el dato que después valida el modelo.
 
 ### Hallazgo crítico: sesgo de censura por atención humana (resuelto)
 - El flujo n8n muere en `Agent Assigned?` (output[0] vacío) cuando un humano toma la conversación (~20% de los casos). En ese estado **no corre el Upsert ni el Postgres Chat Memory** → lo que el lead dice durante atención humana **no se guarda en `leads_dataset` ni en `n8n_chat_histories`**. Solo vive en Chatwoot.

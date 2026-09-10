@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from app import db
 from app.catalog import MODULOS, LINK_TRIAL, LINK_DEMO
 from app.scoring import score_text
+from app import reparto
 
 APP_TOKEN = os.getenv("APP_TOKEN", "")
 ADMIN_USER = os.getenv("ADMIN_USER", "admin").strip().lower()
@@ -667,6 +668,50 @@ async def lifespan(app: FastAPI):
         """,
         json.dumps(OUTCOME_LEGACY),
         list(OUTCOME_LEGACY) + ["demo_agendada", "cliente", "perdido"],
+    )
+
+    # Historial de repartos (app/reparto.py). Existe por dos razones. Una: el cursor de
+    # rotacion de la serpiente — que vendedor abrio el ultimo lote — sale de aqui, asi que
+    # no hace falta una tabla de ajustes. Dos: la etiqueta de responsable dice quien lleva
+    # el lead HOY, pero se sobrescribe, y con ella se pierde quien lo recibio, cuando y en
+    # que puesto del ranking. Sin eso no se puede evaluar despues si el reparto funciono.
+    await pool.execute(
+        """
+        CREATE TABLE IF NOT EXISTS reparto_lotes (
+          id          bigserial PRIMARY KEY,
+          metodo      text NOT NULL,
+          creado_at   timestamptz NOT NULL DEFAULT now(),
+          autor       text NOT NULL,
+          inicio      integer NOT NULL,
+          abrio       text,
+          vendedores  text[] NOT NULL DEFAULT '{}',
+          capacidad   integer,
+          leads       integer NOT NULL DEFAULT 0,
+          sin_asignar integer NOT NULL DEFAULT 0
+        )
+        """
+    )
+    await pool.execute(
+        """
+        CREATE TABLE IF NOT EXISTS reparto_asignaciones (
+          id          bigserial PRIMARY KEY,
+          lote_id     bigint NOT NULL REFERENCES reparto_lotes(id) ON DELETE CASCADE,
+          lead_id     varchar(255) NOT NULL REFERENCES leads_dataset(lead_id) ON DELETE CASCADE,
+          vendedor    text NOT NULL,
+          ronda       integer NOT NULL,
+          posicion    integer NOT NULL,
+          score       real,
+          asignado_at timestamptz NOT NULL DEFAULT now()
+        )
+        """
+    )
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reparto_asig_lote ON reparto_asignaciones (lote_id)"
+    )
+    # Por lead y fecha: es la consulta de «desde cuando lo tiene», que es la base del SLA.
+    await pool.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reparto_asig_lead "
+        "ON reparto_asignaciones (lead_id, asignado_at DESC)"
     )
 
     # Los usuarios del login deben ser gente del equipo: asi el autor de una nota y la
@@ -1613,3 +1658,238 @@ async def score_lead(lead_id: str, _=Depends(check_auth)):
         prob, lead_id,
     )
     return {"lead_id": lead_id, "conversion_prob": prob}
+
+
+# ══════════ Reparto de leads entre vendedores ══════════
+# El ranking dice a quien atender primero; el reparto dice QUIEN lo atiende. El metodo y su
+# justificacion viven en app/reparto.py; aqui solo esta el cableado con la base de datos.
+#
+# Tope de leads abiertos por vendedor. 0 = sin tope, y es el defecto a proposito: inventar
+# un numero aqui haria que el sistema dejara leads sin repartir por una cifra que nadie ha
+# medido. Se sube cuando el equipo sepa cuantos puede llevar cada uno de verdad.
+REPARTO_CAPACIDAD = int(os.getenv("REPARTO_CAPACIDAD", "0"))
+
+# Un lead cerrado ya no se reparte: no queda nada que trabajar en el.
+OUTCOME_CERRADO = ("cliente", "perdido")
+
+
+class RepartoItem(BaseModel):
+    lead_id: str
+    vendedor: str
+    ronda: int = 1
+    posicion: int = 0
+
+
+class RepartoBody(BaseModel):
+    # El cliente devuelve el reparto que VIO en el preview, no unos filtros para recalcular:
+    # entre mirar y aplicar pueden entrar leads nuevos, y nadie debe aplicar a ciegas algo
+    # distinto de lo que aprobo. El servidor revalida cada lead antes de tocarlo.
+    asignaciones: list[RepartoItem]
+    metodo: str = reparto.METODO
+    inicio: int = 0
+    capacidad: Optional[int] = None
+
+
+def _vendedores_validos(crudos: Optional[list[str]]) -> list[str]:
+    """Filtra contra TAG_GROUPS y CONSERVA su orden: el reparto tiene que ser reproducible."""
+    equipo = TAG_GROUPS["responsable"]
+    if not crudos:
+        return list(equipo)
+    elegidos = {v.strip().lower() for v in crudos if v.strip()}
+    if (ajenos := sorted(elegidos - set(equipo))):
+        raise HTTPException(status_code=400, detail=f"No son vendedores: {', '.join(ajenos)}")
+    return [v for v in equipo if v in elegidos]
+
+
+async def _carga_abierta(conn, vendedores: list[str]) -> dict[str, int]:
+    """Leads que cada vendedor tiene AHORA sin cerrar. Es la carga real, no la historica."""
+    filas = await conn.fetch(
+        """
+        SELECT t AS vendedor, count(*) AS abiertos
+          FROM leads_dataset l, unnest(l.outcome_tags) AS t
+         WHERE t = ANY($1::text[]) AND l.is_test = false
+           AND l.outcome <> ALL($2::text[])
+         GROUP BY t
+        """,
+        vendedores, list(OUTCOME_CERRADO),
+    )
+    abiertos = {f["vendedor"]: f["abiertos"] for f in filas}
+    return {v: abiertos.get(v, 0) for v in vendedores}
+
+
+async def _cursor_reparto(conn, vendedores: list[str]) -> int:
+    """Quien abre este lote: el siguiente al que abrio el anterior.
+
+    Se guarda el NOMBRE de quien abrio, no solo su indice, porque el equipo puede cambiar
+    entre lotes (alguien de vacaciones sale de la lista) y un indice suelto acabaria
+    apuntando a otra persona. Si quien abrio ya no esta, se empieza por el primero.
+    """
+    fila = await conn.fetchrow(
+        "SELECT abrio FROM reparto_lotes ORDER BY creado_at DESC, id DESC LIMIT 1")
+    if not fila or fila["abrio"] not in vendedores:
+        return 0
+    return (vendedores.index(fila["abrio"]) + 1) % len(vendedores)
+
+
+async def _candidatos_reparto(conn, limite: int) -> list[dict]:
+    """Los leads que toca repartir, mejor puntuado primero.
+
+    Se excluyen los que YA tienen responsable: reasignar por lotes le quitaria a alguien un
+    lead que quiza ya trabajo, y ninguna cartera seria estable. Sin conversion_prob no hay
+    ranking que repartir, asi que esos tampoco entran — primero hay que puntuarlos.
+    """
+    filas = await conn.fetch(
+        """
+        SELECT lead_id, contact_name, company_name, wa_display_name, conversion_prob,
+               outcome, outcome_tags, captured_at
+          FROM leads_dataset
+         WHERE is_test = false
+           AND conversion_prob IS NOT NULL
+           AND outcome <> ALL($1::text[])
+           AND NOT (outcome_tags && $2::text[])
+         ORDER BY conversion_prob DESC, lead_id
+         LIMIT $3
+        """,
+        list(OUTCOME_CERRADO), TAG_GROUPS["responsable"], limite,
+    )
+    return [db.row_to_dict(f) for f in filas]
+
+
+@app.get("/api/reparto/preview")
+async def reparto_preview(
+    limit: int = Query(20, ge=1, le=200),
+    vendedores: Optional[str] = Query(None, description="csv; omitir = todo el equipo"),
+    capacidad: Optional[int] = Query(None, ge=0, description="tope de leads abiertos; 0 = sin tope"),
+    _=Depends(check_auth),
+):
+    """Calcula el reparto SIN aplicarlo. Nadie reparte leads a ciegas."""
+    equipo = _vendedores_validos(vendedores.split(",") if vendedores else None)
+    tope = REPARTO_CAPACIDAD if capacidad is None else capacidad
+
+    pool = db.get_pool()
+    async with pool.acquire() as conn:
+        candidatos = await _candidatos_reparto(conn, limit)
+        carga = await _carga_abierta(conn, equipo)
+        inicio = await _cursor_reparto(conn, equipo)
+
+    # Huecos libres = tope menos lo que ya lleva abierto. Sin tope, sin limite.
+    huecos = {v: max(0, tope - carga[v]) for v in equipo} if tope > 0 else None
+    plan = reparto.serpiente(candidatos, equipo, capacidad=huecos, inicio=inicio)
+
+    # Los datos del lead viajan pegados al plan para que la tabla se pinte sin un segundo
+    # viaje: el algoritmo por si solo devuelve ids, que no se pueden enseñar a nadie.
+    por_id = {c["lead_id"]: c for c in candidatos}
+    for a in plan["asignaciones"]:
+        a["lead"] = por_id.get(a["lead_id"])
+    for f in plan["resumen"]:
+        f["abiertos"] = carga[f["vendedor"]]
+        f["huecos"] = None if huecos is None else huecos[f["vendedor"]]
+
+    return {
+        "metodo": reparto.METODO,
+        "vendedores": equipo,
+        "abre": equipo[plan["inicio"]] if equipo else None,
+        "inicio": plan["inicio"],
+        "rondas": plan["rondas"],
+        "capacidad": tope,
+        "candidatos": len(candidatos),
+        "asignaciones": plan["asignaciones"],
+        "sin_asignar": plan["sin_asignar"],
+        "resumen": plan["resumen"],
+        "brecha": reparto.brecha(plan["resumen"]),
+    }
+
+
+@app.post("/api/reparto/aplicar")
+async def reparto_aplicar(body: RepartoBody, usuario: str = Depends(check_auth)):
+    """Escribe la etiqueta de responsable de cada lead y deja el lote en el historial.
+
+    Revalida lead por lead antes de tocarlo: si entre el preview y el aplicar alguien ya se
+    quedo con uno o lo cerro, ese se OMITE y se dice cual. Aplicar el resto es lo correcto —
+    anular el lote entero por un lead que cambio dejaria todo el trabajo sin hacer.
+
+    No mueve outcome ni outcome_date: el responsable no es un hito del embudo, y fechar el
+    reparto como si lo fuera falsearia el Scoreboard de la semana.
+    """
+    if not body.asignaciones:
+        raise HTTPException(status_code=400, detail="No hay asignaciones que aplicar")
+    equipo = _vendedores_validos([a.vendedor for a in body.asignaciones])
+
+    vistos: set[str] = set()
+    for a in body.asignaciones:
+        if a.lead_id in vistos:
+            raise HTTPException(status_code=400, detail=f"Lead repetido en el lote: {a.lead_id}")
+        vistos.add(a.lead_id)
+
+    aplicadas: list[dict] = []
+    omitidas: list[dict] = []
+    pool = db.get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            for a in body.asignaciones:
+                # FOR UPDATE: dos personas dandole a Aplicar a la vez repartirian el mismo
+                # lead dos veces, y el segundo pisaria al primero sin que nadie se enterara.
+                fila = await conn.fetchrow(
+                    "SELECT outcome, outcome_tags, conversion_prob, is_test "
+                    "FROM leads_dataset WHERE lead_id = $1 FOR UPDATE", a.lead_id)
+                if fila is None:
+                    omitidas.append({"lead_id": a.lead_id, "razon": "ya no existe"})
+                    continue
+                if fila["is_test"]:
+                    omitidas.append({"lead_id": a.lead_id, "razon": "es de prueba"})
+                    continue
+                if fila["outcome"] in OUTCOME_CERRADO:
+                    omitidas.append({"lead_id": a.lead_id, "razon": f"ya esta como {fila['outcome']}"})
+                    continue
+                tags = list(fila["outcome_tags"] or [])
+                previo = next((t for t in tags if t in TAG_GROUPS["responsable"]), None)
+                if previo:
+                    omitidas.append({"lead_id": a.lead_id, "razon": f"ya es de {previo}"})
+                    continue
+                await conn.execute(
+                    "UPDATE leads_dataset SET outcome_tags=$1, updated_at=NOW() WHERE lead_id=$2",
+                    normalize_tags(tags + [a.vendedor]), a.lead_id)
+                aplicadas.append({"lead_id": a.lead_id, "vendedor": a.vendedor,
+                                  "ronda": a.ronda, "posicion": a.posicion,
+                                  "score": fila["conversion_prob"]})
+
+            # El lote se guarda aunque no se haya aplicado nada: que un reparto saliera
+            # entero en falso tambien es informacion, y el cursor tiene que avanzar igual
+            # para que la rotacion no se quede clavada en la misma persona.
+            abre = equipo[body.inicio % len(equipo)] if equipo else None
+            lote = await conn.fetchval(
+                """
+                INSERT INTO reparto_lotes
+                       (metodo, autor, inicio, abrio, vendedores, capacidad, leads, sin_asignar)
+                VALUES ($1, $2, $3, $4, $5::text[], $6, $7, $8) RETURNING id
+                """,
+                body.metodo, usuario, body.inicio % max(1, len(equipo)), abre, equipo,
+                body.capacidad, len(aplicadas), len(omitidas),
+            )
+            if aplicadas:
+                await conn.executemany(
+                    "INSERT INTO reparto_asignaciones "
+                    "(lote_id, lead_id, vendedor, ronda, posicion, score) "
+                    "VALUES ($1, $2, $3, $4, $5, $6)",
+                    [(lote, a["lead_id"], a["vendedor"], a["ronda"], a["posicion"], a["score"])
+                     for a in aplicadas],
+                )
+
+    print(f"[reparto] lote {lote} ({body.metodo}) por {usuario}: "
+          f"{len(aplicadas)} asignados, {len(omitidas)} omitidos", flush=True)
+    return {"ok": True, "lote": lote, "aplicadas": aplicadas, "omitidas": omitidas,
+            "resumen": reparto.resumen(aplicadas, equipo)}
+
+
+@app.get("/api/reparto/historial")
+async def reparto_historial(limit: int = Query(20, ge=1, le=100), _=Depends(check_auth)):
+    """Ultimos lotes repartidos. Es lo que permite auditar quien recibio que, y cuando."""
+    filas = await db.get_pool().fetch(
+        """
+        SELECT l.*,
+               (SELECT count(*) FROM reparto_asignaciones a WHERE a.lote_id = l.id) AS asignados
+          FROM reparto_lotes l
+         ORDER BY l.creado_at DESC, l.id DESC
+         LIMIT $1
+        """, limit)
+    return {"items": [db.row_to_dict(f) for f in filas]}

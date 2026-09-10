@@ -383,8 +383,8 @@ async function api(method, path, body) {
 }
 
 /* ══════════ Router ══════════ */
-const VIEWS = ['dashboard', 'leads', 'detail', 'etiquetado', 'scoreboard'];
-const TITULOS = { dashboard: 'Dashboard', leads: 'Leads', detail: 'Detalle del lead', etiquetado: 'Etiquetado', scoreboard: 'Scoreboard' };
+const VIEWS = ['dashboard', 'leads', 'detail', 'etiquetado', 'reparto', 'scoreboard'];
+const TITULOS = { dashboard: 'Dashboard', leads: 'Leads', detail: 'Detalle del lead', etiquetado: 'Etiquetado', reparto: 'Reparto', scoreboard: 'Scoreboard' };
 
 function nav(view, param) {
   location.hash = param ? `#${view}/${param}` : `#${view}`;
@@ -415,6 +415,7 @@ function route() {
   if (v === 'leads') loadLeads();
   if (v === 'detail') loadDetail(param);
   if (v === 'etiquetado') loadEtiquetado();
+  if (v === 'reparto') loadReparto();
   if (v === 'scoreboard') loadScoreboard();
   refreshTagBadge();
   renderCampana();   // usa la cache: no reevalua en cada cambio de vista
@@ -2019,6 +2020,180 @@ document.addEventListener('keydown', e => {
 });
 
 $('q-inp').addEventListener('blur', () => setTimeout(ocultarResultados, 150));
+
+
+/* ══════════ Reparto ══════════
+   El ranking dice a quien atender primero; esta vista dice QUIEN lo atiende. Siempre se
+   PREVISUALIZA antes de aplicar: aplicar escribe el responsable de leads reales, y de esa
+   etiqueta salen las alertas por correo de cada persona. */
+const VENDEDORES = TAG_GROUPS.find(g => g.key === 'responsable').tags.map(t => t.v);
+let repartoPlan = null;
+let repartoTam = 20;
+let repartoFuera = new Set();   // vendedores excluidos de este lote (vacaciones, baja...)
+let repartoConfirma = null;     // temporizador de la confirmacion en dos pasos
+
+function ponerTamLote(n) {
+  repartoTam = n;
+  loadReparto();
+}
+
+/* Entra o saca a alguien del lote. Es el caso real de «hoy Jhon no esta»: sin esto habria
+   que repartirle leads igual y reasignarlos a mano despues. */
+function alternarVendedor(v) {
+  if (repartoFuera.has(v)) repartoFuera.delete(v); else repartoFuera.add(v);
+  loadReparto();
+}
+
+async function loadReparto() {
+  const el = $('rp-body');
+  cancelarConfirmacionReparto();
+  if (!el.children.length) el.innerHTML = '<div class="loading"><span class="spinner"></span>Cargando…</div>';
+
+  const dentro = VENDEDORES.filter(v => !repartoFuera.has(v));
+  const params = new URLSearchParams({ limit: repartoTam });
+  if (repartoFuera.size) params.set('vendedores', dentro.join(','));
+
+  // Con todo el equipo fuera no hay a quien repartir; se pregunta igual (sin el filtro)
+  // para poder pintar las tarjetas y que se pueda volver a meter a alguien.
+  const plan = await api('GET', '/reparto/preview?' + (dentro.length ? params : new URLSearchParams({ limit: repartoTam })));
+  if (!plan) return;
+  repartoPlan = dentro.length ? plan : { ...plan, asignaciones: [], resumen: [], sin_asignar: [] };
+
+  document.querySelectorAll('#rp-tam button').forEach(b =>
+    b.classList.toggle('active', Number(b.dataset.tam) === repartoTam));
+  $('rp-aplicar').disabled = !repartoPlan.asignaciones.length;
+
+  el.innerHTML = repartoCuerpo(repartoPlan, dentro);
+}
+
+function repartoCuerpo(p, dentro) {
+  if (!dentro.length) {
+    return `<div class="empty">${ico('users')}<p>No queda nadie en el reparto. Vuelve a incluir al menos a una persona.</p>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="repartoFuera.clear();loadReparto()">Incluir a todo el equipo</button></div>`;
+  }
+  if (!p.candidatos) {
+    return `<div class="empty">${ico('check-circle')}<p>No hay leads que repartir: todos los puntuados ya tienen responsable.</p>
+      <p class="hint">Entran aquí los leads con probabilidad calculada, sin responsable y sin cerrar.
+      Si esperabas ver alguno, quizá le falte el score.</p></div>`;
+  }
+
+  const porVendedor = Object.fromEntries(p.resumen.map(f => [f.vendedor, f]));
+  const tarjetas = VENDEDORES.map(v => {
+    const f = porVendedor[v];
+    const fuera = repartoFuera.has(v);
+    const valor = f && f.valor != null ? f.valor.toFixed(2) : '0.00';
+    const pie = fuera
+      ? 'fuera de este reparto'
+      : `${valor} esperadas · ${f ? f.abiertos : 0} abierto${f && f.abiertos === 1 ? '' : 's'}`;
+    return `<button type="button" class="kpi kpi-link rp-card${fuera ? ' is-fuera' : ''}"
+        onclick="alternarVendedor('${esc(v)}')"
+        title="${fuera ? 'Volver a incluir a ' + cap(v) : 'Dejar a ' + cap(v) + ' fuera de este reparto'}">
+      <div class="kpi-head"><span class="kpi-label">${avatar(cap(v), 'avatar-sm')}${esc(cap(v))}</span>${
+        ico(fuera ? 'x-circle' : 'check-circle')}</div>
+      <div class="kpi-value">${fuera ? '—' : (f ? f.leads : 0)}<small>${fuera ? '' : ' leads'}</small></div>
+      <div class="kpi-foot"><span>${esc(pie)}</span></div>
+    </button>`;
+  }).join('');
+
+  // Lo que hay que entender para fiarse del reparto: quien abre y como de parejo salio.
+  const cabecera = `<div class="notice" style="margin-bottom:14px">${ico('info')}<div class="notice-body">
+    Abre <b>${esc(cap(p.abre || ''))}</b> y el orden se invierte en cada ronda, así que quien
+    pierde el primer puesto de una ronda gana el de la siguiente. ${p.rondas} ronda${p.rondas === 1 ? '' : 's'}.
+    La diferencia entre la mejor y la peor cartera es de <b>${(p.brecha || 0).toFixed(2)}</b> conversiones esperadas.
+    ${p.capacidad ? `Tope de ${p.capacidad} leads abiertos por persona.` : ''}
+  </div></div>`;
+
+  const filas = p.asignaciones.map(a => {
+    const l = a.lead || {};
+    const nombre = nombreLead(l) || '+' + a.lead_id;
+    const pct = a.score != null ? Math.round(a.score * 100) : null;
+    return `<tr>
+      <td class="num rp-pos">${a.posicion}</td>
+      <td><a class="rp-lead" href="#detail/${esc(a.lead_id)}">${avatar(nombreLead(l), 'avatar-sm', a.lead_id)}
+        <span><b>${esc(nombre)}</b>${l.company_name ? `<span class="hint"> · ${esc(l.company_name)}</span>` : ''}</span></a></td>
+      <td>${pct != null ? scoreRing(pct) : '<span class="hint">—</span>'}</td>
+      <td class="num hint rp-ronda">${a.ronda}</td>
+      <td><span class="badge badge-${TAG_CLASS[a.vendedor] || 'slate'}">${avatar(cap(a.vendedor), 'avatar-sm')}${esc(cap(a.vendedor))}</span></td>
+    </tr>`;
+  }).join('');
+
+  // Los que se quedan esperando no se esconden: son leads reales que nadie va a llamar.
+  const espera = p.sin_asignar.length ? `
+    <div class="section-head" style="margin-top:22px">
+      <h3>Se quedan sin repartir</h3>
+      <span class="hint">no quedan huecos dentro del tope; entran en el próximo lote</span>
+    </div>
+    <div class="card"><table class="table-plain"><tbody>${p.sin_asignar.map(l => `
+      <tr><td><a class="rp-lead" href="#detail/${esc(l.lead_id)}">${avatar(nombreLead(l), 'avatar-sm', l.lead_id)}
+        <span>${esc(nombreLead(l) || '+' + l.lead_id)}</span></a></td>
+        <td class="num" style="width:70px">${l.conversion_prob != null ? scoreRing(Math.round(l.conversion_prob * 100)) : ''}</td></tr>`).join('')}
+    </tbody></table></div>` : '';
+
+  return `<div class="kpi-grid">${tarjetas}</div>${cabecera}
+    <div class="card"><div class="rp-scroll"><table class="table-plain">
+      <thead><tr><th class="num">#</th><th>Lead</th><th>P(conv.)</th><th class="num rp-ronda">Ronda</th><th>Responsable</th></tr></thead>
+      <tbody>${filas}</tbody>
+    </table></div></div>${espera}`;
+}
+
+/* Aplicar en dos pasos. Escribe el responsable de leads reales y de ahi salen los correos
+   de cada persona, asi que un clic de mas no debe bastar. El segundo clic tiene 6 segundos;
+   pasados, el boton vuelve a su sitio solo. */
+function aplicarReparto() {
+  const btn = $('rp-aplicar');
+  if (!repartoPlan || !repartoPlan.asignaciones.length) return;
+  if (repartoConfirma) return confirmarReparto(btn);
+
+  const n = repartoPlan.asignaciones.length;
+  btn.innerHTML = `${ico('alert', 'ico-sm')}Confirmar: asignar ${n} lead${n === 1 ? '' : 's'}`;
+  btn.classList.add('btn-danger');
+  repartoConfirma = setTimeout(() => cancelarConfirmacionReparto(), 6000);
+}
+
+/* Devolver el boton a su sitio va SEPARADO de desarmar el temporizador. Cuando estaban
+   juntos, la salida temprana por «no hay temporizador» dejaba el boton diciendo
+   «Repartiendo…» para siempre despues de aplicar, porque el temporizador ya se habia
+   desarmado en el primer paso. */
+function restaurarBotonReparto() {
+  const btn = $('rp-aplicar');
+  btn.classList.remove('btn-danger');
+  btn.innerHTML = `${ico('split', 'ico-sm')}Aplicar reparto`;
+}
+
+function cancelarConfirmacionReparto() {
+  if (repartoConfirma) {
+    clearTimeout(repartoConfirma);
+    repartoConfirma = null;
+  }
+  restaurarBotonReparto();
+}
+
+async function confirmarReparto(btn) {
+  cancelarConfirmacionReparto();
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Repartiendo…';
+  const res = await api('POST', '/reparto/aplicar', {
+    asignaciones: repartoPlan.asignaciones.map(a => ({
+      lead_id: a.lead_id, vendedor: a.vendedor, ronda: a.ronda, posicion: a.posicion,
+    })),
+    metodo: repartoPlan.metodo,
+    inicio: repartoPlan.inicio,
+    capacidad: repartoPlan.capacidad || null,
+  });
+  btn.disabled = false;
+  cancelarConfirmacionReparto();
+  if (!res) return;
+  if (res.detail) { toast(res.detail, 'crit'); return; }
+
+  // Se dice cuantos se omitieron y por que: un lote que asigna menos de lo que enseño sin
+  // explicarlo se lee como un fallo del sistema, cuando casi siempre es que el lead cambio.
+  const n = res.aplicadas.length;
+  const om = res.omitidas.length;
+  toast(om ? `${n} lead${n === 1 ? '' : 's'} repartidos · ${om} sin cambiar (${res.omitidas[0].razon}${om > 1 ? ', …' : ''})`
+           : `${n} lead${n === 1 ? '' : 's'} repartidos`, om ? 'info' : 'ok');
+  loadReparto();
+  refreshTagBadge();
+}
 
 // La barra superior gana borde cuando el contenido pasa por debajo.
 function onScrollTop() {

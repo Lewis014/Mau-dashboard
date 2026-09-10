@@ -856,6 +856,42 @@ main.fit .view-wrap { height: 100%; display: flex; flex-direction: column; paddi
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
 
+/* ── Reparto ───────────────────────────────────────────────────────────────────────── */
+/* Confirmacion de una accion que escribe leads reales. Rojo porque hay que mirarla, no
+   porque sea un error: es el segundo paso del boton de aplicar. */
+.btn-danger { background: var(--crit); color: #fff; border-color: transparent; }
+.btn-danger:hover:not(:disabled) { filter: brightness(.93); }
+
+/* Tarjeta de vendedor: la misma caja que un KPI, pero se pulsa para dejar a alguien fuera
+   del reparto de hoy. Atenuada, no oculta: quien esta fuera tiene que seguir viendose. */
+.rp-card { text-align: left; cursor: pointer; }
+.rp-card .kpi-label { display: inline-flex; align-items: center; gap: 7px; }
+.rp-card .kpi-head .ico { color: var(--ok); }
+.rp-card.is-fuera { opacity: .5; background: var(--surface-2); }
+.rp-card.is-fuera .kpi-head .ico { color: var(--ink-3); }
+.rp-card.is-fuera .kpi-value { color: var(--ink-3); }
+
+.rp-pos { width: 46px; color: var(--ink-3); font-size: 12.5px; }
+.rp-lead { display: inline-flex; align-items: center; gap: 9px; color: inherit; }
+.rp-lead:hover b { color: var(--brand); }
+/* La tabla puede pasarse de ancho en el movil; se desplaza dentro de su tarjeta y no
+   arrastra la pagina entera en horizontal. */
+.rp-scroll { overflow-x: auto; border-radius: var(--r-md); }
+.rp-scroll .table-plain { min-width: 560px; }
+
+@media (max-width: 599px) {
+  /* Cabe una columna menos. Se va Ronda, que explica el metodo, y no Responsable, que es
+     el dato por el que se entra aqui: tenerlo fuera de pantalla vacia la vista. */
+  .rp-ronda { display: none; }
+  /* El relleno de 16px por lado se come 128px de los ~358 disponibles: con cuatro columnas
+     es lo que dejaba al responsable fuera de pantalla. */
+  .rp-scroll .table-plain th,
+  .rp-scroll .table-plain td { padding-left: 9px; padding-right: 9px; }
+  .rp-scroll .table-plain { min-width: 0; }
+  .rp-pos { width: 22px; }
+  .rp-lead { gap: 7px; }
+}
+
 /* ── Impresion (solo el brief) ──────────────────────────────────────────────────────── */
 @media print {
   body { overflow: visible; }
