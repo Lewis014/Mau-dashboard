@@ -2079,6 +2079,11 @@ async function loadReparto() {
     b.classList.toggle('active', Number(b.dataset.tam) === repartoTam));
   document.querySelectorAll('#rp-metodo button').forEach(b =>
     b.classList.toggle('active', b.dataset.metodo === repartoMetodo));
+  // El subtitulo dice el metodo activo: que no diga «en serpiente» con Afinidad puesta.
+  const sub = document.querySelector('#view-reparto .view-sub');
+  if (sub) sub.textContent = repartoMetodo === 'afinidad'
+    ? 'Los leads mejor puntuados que aún no tienen responsable, cada uno con quien mejor encaja.'
+    : 'Los leads mejor puntuados que aún no tienen responsable, repartidos en serpiente.';
   $('rp-aplicar').disabled = !repartoPlan.asignaciones.length;
 
   el.innerHTML = repartoCuerpo(repartoPlan, nadie ? [] : (dentro.length ? dentro : repartoEquipo));
