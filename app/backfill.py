@@ -58,6 +58,40 @@ CHATWOOT_ACCOUNT = os.getenv("CHATWOOT_ACCOUNT_ID", "1")
 CHATWOOT_INBOX = int(os.getenv("CHATWOOT_INBOX_ID", "1"))
 CHATWOOT_TOKEN = os.getenv("CHATWOOT_API_TOKEN", "")
 
+# Como escribe y consulta el lead. Salen del texto libre, no de sus respuestas al bot: la
+# prueba de 30 (10/09/2026) mostro que sin esa distincion el modelo clasificaba a cualquiera
+# que contestara dos palabras. De aqui salen dos dimensiones del reparto por afinidad
+# (app/afinidad.py); ver docs/reparto-metodo-2-afinidad.md.
+ESTILO_REGLAS = (
+    "- La primera linea del LEAD suele ser la plantilla del anuncio de Meta (\"Hola, soy un "
+    "estudio contable...\"): NO la escribio el, no cuenta para nada.\n"
+    "- 'estilo_consulta' y 'dominio_tecnico' se juzgan SOLO por lo que el lead pregunta o "
+    "cuenta por iniciativa propia. Contestar a una pregunta del BOT (un nombre, 'Todos', "
+    "'Manual', una cifra) NO es consultar: si eso es todo lo que hay, deja null.\n"
+    "- 'dominio_tecnico' es 'alto' solo con vocabulario tecnico explicito (SIRE, PLE, "
+    "credito fiscal, libros electronicos, integracion, API). En cualquier otro caso null: "
+    "'bajo' no aporta nada y hoy se lo llevaria cualquiera que escriba dos palabras."
+)
+
+ESTILO_PROPS = {
+    "estilo_consulta": {
+        "type": ["string", "null"],
+        "enum": ["directo", "explorador", None],
+        "description": ("Como consulta el lead POR INICIATIVA PROPIA. 'directo': formulo una "
+                        "pregunta o peticion concreta (precio, demo, requisitos, si se integra "
+                        "con X, como funciona). 'explorador': pidio que le contaran o explicaran "
+                        "sin concretar ('cuentame de todo', 'mas informacion', 'que ofrecen'). "
+                        "null: no pregunto nada por su cuenta, solo respondio al bot."),
+    },
+    "dominio_tecnico": {
+        "type": ["string", "null"],
+        "enum": ["alto", None],
+        "description": ("'alto' SOLO si el lead uso vocabulario contable o tecnico especifico "
+                        "(SIRE, PLE, credito fiscal, libros electronicos, detracciones, "
+                        "integracion, API, XML). En cualquier otro caso null."),
+    },
+}
+
 SYSTEM_PROMPT = (
     "Eres un analista de datos de Contatech. MAU es el asistente contable virtual "
     "B2B (Peru/LATAM) que vende 3 modulos: COMUNICA (notificaciones SUNAT multi-RUC), "
@@ -72,7 +106,8 @@ SYSTEM_PROMPT = (
     "- 'dolor_principal' e 'industry' son texto libre corto (<= 8 palabras), solo si el lead lo expreso.\n"
     "- 'pidio_demo' es true solo si el lead pidio explicitamente una demo/reunion/llamada.\n"
     "- 'qualified' es un heuristico: true si el lead mostro intencion real (dio datos de "
-    "contacto, pidio precio/demo, describio su operacion). No es el resultado de venta."
+    "contacto, pidio precio/demo, describio su operacion). No es el resultado de venta.\n"
+    + ESTILO_REGLAS
 )
 
 EXTRACT_TOOL = {
@@ -113,6 +148,7 @@ EXTRACT_TOOL = {
             "tipo_lead": {"type": ["string", "null"], "description": "Juicio cualitativo libre del agente (ej. 'caliente', 'curioso')."},
             "ticket_estimado": {"type": ["string", "null"], "description": "Estimacion de ticket si se infiere del contexto, ej. '< S/300/mes'."},
             "qualified": {"type": "boolean"},
+            **ESTILO_PROPS,
         },
         "required": ["modulos_interes", "pidio_demo", "qualified"],
     },
@@ -122,7 +158,7 @@ FEATURE_COLS = [
     "contact_name", "email", "company_name", "tax_id", "industry", "segmento",
     "num_rucs", "volumen_comprobantes", "modulos_interes", "solucion_actual",
     "objecion", "urgencia", "pidio_demo", "dolor_principal", "tipo_lead",
-    "ticket_estimado", "qualified",
+    "ticket_estimado", "qualified", "estilo_consulta", "dominio_tecnico",
 ]
 
 
@@ -285,10 +321,12 @@ INSERT INTO leads_dataset (
     num_rucs, volumen_comprobantes, modulos_interes, solucion_actual,
     objecion, urgencia, pidio_demo, dolor_principal, tipo_lead,
     ticket_estimado, qualified, message_count, canal, transcript, is_test,
+    estilo_consulta, dominio_tecnico,
     captured_at, updated_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-    $17, $18, $19, $20, $21, $22, $23, COALESCE(to_timestamp($24), NOW()), NOW()
+    $17, $18, $19, $20, $21, $22, $23, $24, $25,
+    COALESCE(to_timestamp($26), NOW()), NOW()
 )
 ON CONFLICT (lead_id) DO UPDATE SET
     -- Identidad y juicios del agente: el flujo n8n en vivo es autoritativo.
@@ -311,6 +349,10 @@ ON CONFLICT (lead_id) DO UPDATE SET
     urgencia             = EXCLUDED.urgencia,
     pidio_demo           = EXCLUDED.pidio_demo,
     dolor_principal      = EXCLUDED.dolor_principal,
+    -- COALESCE y no asignacion directa: si esta pasada no vio texto libre (null) pero la de
+    -- app/estilo_leads.py si lo vio, borrarlo seria perder trabajo ya hecho.
+    estilo_consulta      = COALESCE(EXCLUDED.estilo_consulta, leads_dataset.estilo_consulta),
+    dominio_tecnico      = COALESCE(EXCLUDED.dominio_tecnico, leads_dataset.dominio_tecnico),
     message_count        = EXCLUDED.message_count,
     canal                = COALESCE(NULLIF(EXCLUDED.canal, ''), leads_dataset.canal),
     transcript           = EXCLUDED.transcript,
@@ -340,7 +382,7 @@ async def upsert_lead(conn: asyncpg.Connection, lead_id: str, session_id: str,
         data["modulos_interes"], data["solucion_actual"], data["objecion"], data["urgencia"],
         data["pidio_demo"], data["dolor_principal"], data["tipo_lead"], data["ticket_estimado"],
         data["qualified"], data["message_count"], data["canal"], transcript,
-        lead_id in TEST_LEADS, first_ts,
+        lead_id in TEST_LEADS, data["estilo_consulta"], data["dominio_tecnico"], first_ts,
     )
 
 

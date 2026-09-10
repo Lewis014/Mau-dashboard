@@ -37,8 +37,9 @@ BETA = 0.25
 # respuestas posibles, que coinciden con los valores que el extractor ya saca del lead
 # (segmento, modulos_interes, solucion_actual, objecion) o que se derivan de el (tamano por
 # num_rucs). `peso` es el prior de la literatura: el conocimiento del cliente y del producto es
-# el mayor predictor (Verbeke 2011); `nivel` A = se puede emparejar desde el primer dia con
-# datos que ya existen, B = falta extraer el dato del lado del lead.
+# el mayor predictor (Verbeke 2011); `nivel` dice cada cuanto se activa sobre los candidatos
+# reales: A = casi siempre (segmento 95%, modulo 79%, estilo 77%, tamano 54%), B = pocas veces
+# pero cuenta cuando aparece (tecnico y objecion 13%, migracion 4%).
 DIMENSIONES: list[dict[str, Any]] = [
     {
         "id": "segmento", "nivel": "A", "peso": 3,
@@ -63,11 +64,17 @@ DIMENSIONES: list[dict[str, Any]] = [
                    ("grande", "Grande (50 o más)")],
     },
     {
-        "id": "estilo", "nivel": "B", "peso": 2,
-        "pregunta": "¿Qué tipo de conversación le sale mejor?",
-        "ayuda": "Se usará cuando el extractor saque el estilo del lead; hoy no lo hace.",
-        "claves": [("tarea", "Directo: va al precio, la integración, los plazos"),
-                   ("relacion", "Conversador: cuenta su historia y su problema")],
+        "id": "estilo", "nivel": "A", "peso": 2,
+        "pregunta": "¿Con qué tipo de consulta se maneja mejor?",
+        "ayuda": "Según lo que el lead pregunta por iniciativa propia.",
+        "claves": [("directo", "Directo: pregunta precio, demo, si se integra con X"),
+                   ("explorador", "Explorador: pide que le cuenten, sin concretar")],
+    },
+    {
+        "id": "tecnico", "nivel": "B", "peso": 2,
+        "pregunta": "¿Cómo se maneja con clientes muy técnicos?",
+        "ayuda": "Los que hablan de SIRE, PLE, crédito fiscal o integraciones. Uno de cada ocho.",
+        "claves": [("alto", "Cliente con vocabulario técnico")],
     },
     {
         "id": "objecion", "nivel": "B", "peso": 1,
@@ -172,13 +179,16 @@ def claves_del_lead(lead: dict) -> dict[str, list[str]]:
     """
     seg = lead.get("segmento")
     sol = lead.get("solucion_actual")
-    est = lead.get("estilo_comunicacion")
+    est = lead.get("estilo_consulta")
     tam = tamano_del_lead(lead.get("num_rucs"), lead.get("volumen_comprobantes"))
     return {
         "segmento": [seg] if seg in CLAVES["segmento"] else [],
         "modulo": [m for m in (lead.get("modulos_interes") or []) if m in CLAVES["modulo"]],
         "tamano": [tam] if tam else [],
         "estilo": [est] if est in CLAVES["estilo"] else [],
+        # Solo el positivo: «bajo» se lo llevaria cualquiera que escriba dos palabras y no
+        # distingue a nadie, asi que el extractor ya no lo produce (ver ESTILO_PROPS).
+        "tecnico": ["alto"] if lead.get("dominio_tecnico") == "alto" else [],
         "objecion": ["precio"] if lead.get("objecion") == "precio" else [],
         "migracion": [sol] if sol in CLAVES["migracion"] else [],
     }
@@ -412,7 +422,8 @@ if __name__ == "__main__":
     normal = normalizar(ejemplo)
     print("\nperfil de ejemplo ->", a_escala(normal)["segmento"], a_escala(normal)["modulo"])
     lead = {"lead_id": "x", "conversion_prob": 0.8, "segmento": "estudio",
-            "modulos_interes": ["procesa", "comunica"], "num_rucs": 25}
+            "modulos_interes": ["procesa", "comunica"], "num_rucs": 25,
+            "estilo_consulta": "directo", "dominio_tecnico": "alto"}
     a, det = afinidad(lead, normal)
     print(f"lead estudio+procesa/comunica+25 RUCs -> afinidad {a:.3f}: {explicar(det)}")
     for malo in ({"segmento": {"estudio": 11}}, {"otra": {}}, {"segmento": {"x": 5}}):

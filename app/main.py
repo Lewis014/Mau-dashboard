@@ -671,6 +671,16 @@ async def lifespan(app: FastAPI):
         list(OUTCOME_LEGACY) + ["demo_agendada", "cliente", "perdido"],
     )
 
+    # Como escribe y consulta el lead, del extractor (app/backfill.py). Son dos dimensiones
+    # del reparto por afinidad; se rellenan hacia atras con app/estilo_leads.py.
+    await pool.execute(
+        """
+        ALTER TABLE leads_dataset
+          ADD COLUMN IF NOT EXISTS estilo_consulta text,
+          ADD COLUMN IF NOT EXISTS dominio_tecnico text
+        """
+    )
+
     # Historial de repartos (app/reparto.py). Existe por dos razones. Una: el cursor de
     # rotacion de la serpiente — que vendedor abrio el ultimo lote — sale de aqui, asi que
     # no hace falta una tabla de ajustes. Dos: la etiqueta de responsable dice quien lleva
@@ -1821,7 +1831,11 @@ async def _candidatos_reparto(conn, limite: int) -> list[dict]:
     filas = await conn.fetch(
         """
         SELECT lead_id, contact_name, company_name, wa_display_name, conversion_prob,
-               outcome, outcome_tags, captured_at
+               outcome, outcome_tags, captured_at,
+               -- Features del lead: sin ellas el reparto por afinidad no tiene con que
+               -- emparejar y sale neutro para todo el mundo (ver app/afinidad.py).
+               segmento, modulos_interes, num_rucs, volumen_comprobantes,
+               objecion, solucion_actual, estilo_consulta, dominio_tecnico
           FROM leads_dataset
          WHERE is_test = false
            AND conversion_prob IS NOT NULL

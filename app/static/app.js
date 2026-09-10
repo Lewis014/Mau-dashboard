@@ -2258,7 +2258,7 @@ async function loadVendedores() {
   const aviso = d.puede_editar ? '' : `<div class="notice" style="margin-bottom:14px">${ico('info')}<div class="notice-body">
     Solo lectura. Los perfiles los edita el administrador: quien está en el reparto no ajusta su propia afinidad.</div></div>`;
   const escala = `<div class="vd-scale">Escala de 0 a ${d.escala}: <b>0</b> le cuesta · <b>${d.neutro}</b> igual que con cualquiera · <b>${d.escala}</b> es su fuerte.
-    Las dimensiones <span class="vd-nivel">A</span> se usan con datos que ya existen; las <span class="vd-nivel">B</span> esperan a que el extractor saque ese dato del lead.</div>`;
+    Las <span class="vd-nivel">A</span> se aplican a casi todos los leads; las <span class="vd-nivel">B</span> se activan pocas veces, pero cuentan cuando aparecen.</div>`;
 
   el.innerHTML = aviso + escala + (d.items.length
     ? d.items.map(v => tarjetaVendedor(v, d)).join('')
