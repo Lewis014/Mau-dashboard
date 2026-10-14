@@ -1084,10 +1084,21 @@ async function refreshTagBadge() {
 /* ══════════ Leads ══════════ */
 function resetAndLoad() { page = 0; loadLeads(); }
 
+/* Prioridad que pone el bot de la feria PBF 2026 (v4 §12). No es una etiqueta: la escribe
+   el bot y la lee John en sus revisiones de las 12:00 y las 18:00. */
+const PRIORIDADES = [
+  { v: 'urgente', l: 'Urgente', c: 'red' },
+  { v: 'alta',    l: 'Alta',    c: 'orange' },
+  { v: 'media',   l: 'Media',   c: 'amber' },
+  { v: 'baja',    l: 'Baja',    c: 'gray' },
+];
+
 const FILTROS_EXTRA = [
   { id: 'f-plan',      label: 'Plan',        opts: PLAN_ESTADOS.map(p => [p.v, p.l]) },
   { id: 'f-seg',       label: 'Seguimiento', opts: SEG_FILTROS.map(s => [s.v, s.l]) },
   { id: 'f-qualified', label: 'Calificado',  opts: [['true', 'Sí'], ['false', 'No']] },
+  { id: 'f-campana',   label: 'Campaña',     opts: [['pbf', 'Feria PBF 2026']] },
+  { id: 'f-prioridad', label: 'Prioridad',   opts: [['con', 'Con prioridad'], ...PRIORIDADES.map(p => [p.v, p.l])] },
 ];
 
 /* Chip de filtro con un <select> nativo encima, invisible: se ve el chip y se usa el
@@ -1109,7 +1120,7 @@ function renderTagFiltros() {
     + FILTROS_EXTRA.map(f => filtroChip(f.id, f.label, f.opts)).join('')
     // Orden: en escritorio se cambia desde la cabecera de la tabla; este chip solo se ve
     // en el celular, donde la tabla no tiene cabecera.
-    + filtroChip('f-sort', 'Ordenar', [['recientes', 'Recientes'], ['score', 'Prob. conversión']], 'filter-sort', '');
+    + filtroChip('f-sort', 'Ordenar', [['recientes', 'Recientes'], ['score', 'Prob. conversión'], ['prioridad', 'Prioridad']], 'filter-sort', '');
 }
 
 /* Repinta el texto de cada chip, cuales estan activos, el boton «Limpiar filtros» y, en el
@@ -1167,9 +1178,13 @@ function paramsLeads() {
   const sort = $('f-sort').value;
   const plan = $('f-plan').value;
   const seg  = $('f-seg').value;
+  const camp = $('f-campana').value;
+  const prio = $('f-prioridad').value;
   const q    = textoBusqueda();
   if (tags.length) params.set('tags', tags.join(','));
   if (plan)    params.set('plan_estado', plan);
+  if (camp)    params.set('campana', camp);
+  if (prio)    params.set('prioridad', prio);
   if (qual)    params.set('qualified', qual);
   if (sort)    params.set('sort', sort);
   if (seg)     params.set('seguimiento', seg);
@@ -1275,9 +1290,19 @@ function probCell(l) {
 
 function estadoCell(l) {
   return `<div class="estado-cell">
-      ${l.tipo_lead ? `<span class="badge badge-blue">${esc(l.tipo_lead)}</span>` : '<span class="cell-muted">—</span>'}
+      ${prioridadBadge(l)}
+      ${l.tipo_lead ? `<span class="badge badge-blue">${esc(l.tipo_lead)}</span>` : (l.prioridad ? '' : '<span class="cell-muted">—</span>')}
       <span class="estado-q${l.qualified ? ' si' : ''}">${l.qualified ? ico('check') + 'Calificado' : 'Sin calificar'}</span>
     </div>`;
+}
+
+/* Pildora de prioridad de la feria. El motivo va en el title: John ve el color al pasar y,
+   si quiere, el porque sin abrir el lead. */
+function prioridadBadge(l) {
+  const p = PRIORIDADES.find(x => x.v === l.prioridad);
+  if (!p) return '';
+  const motivo = (l.prioridad_motivo || '').replace(/_/g, ' ');
+  return `<span class="badge with-dot badge-${p.c}" title="${esc(motivo)}">${esc(p.l)}${l.origen ? ' · PBF' : ''}</span>`;
 }
 
 /* Celda de seguimiento: la accion y cuanto le queda. El color es el que hace que un
@@ -1506,15 +1531,16 @@ async function scoreLead(leadId, btn) {
 /* ══════════ Detalle de lead ══════════ */
 function parseTranscript(t) {
   // Formato esperado: lineas "role: texto" (human/ai/agent). Si no matchea, texto plano.
+  // transcript_ts antepone la hora: "[14/10 10:32] LEAD: texto".
   const lines = (t || '').split('\n');
   const msgs = [];
   let cur = null;
   for (const ln of lines) {
-    const m = ln.match(/^(human|ai|agente|agent|lead|bot|user|assistant)\s*:\s*(.*)$/i);
+    const m = ln.match(/^(?:\[([^\]]+)\]\s*)?(human|ai|agente|agent|lead|bot|user|assistant)\s*:\s*(.*)$/i);
     if (m) {
       if (cur) msgs.push(cur);
-      const role = /^(human|lead|user)$/i.test(m[1]) ? 'human' : 'ai';
-      cur = { role, tag: m[1].toUpperCase(), text: m[2] };
+      const role = /^(human|lead|user)$/i.test(m[2]) ? 'human' : 'ai';
+      cur = { role, tag: m[2].toUpperCase() + (m[1] ? ` · ${m[1]}` : ''), text: m[3] };
     } else if (cur) {
       cur.text += '\n' + ln;
     }
@@ -1539,6 +1565,12 @@ const DETAIL_FIELDS = [
   ['solucion_actual', 'Solución actual'], ['dolor_principal', 'Dolor principal'],
   ['objecion', 'Objeción'], ['urgencia', 'Urgencia'], ['tipo_lead', 'Tipo de lead'],
   ['ticket_estimado', 'Ticket estimado'], ['message_count', 'N° mensajes'],
+  // Feria PBF 2026: solo aparecen en los leads que llegaron por el stand.
+  ['origen', 'Origen (feria)'], ['color', 'Semáforo'], ['puntaje', 'Puntaje'], ['perfil', 'Perfil'],
+  ['num_ruc_rango', 'RUCs (rango)'], ['consentimiento', 'Consentimiento'], ['estado_pbf', 'Estado (feria)'],
+  ['oferta', 'Eligió'], ['cita_dia', 'Cita: día'], ['cita_franja', 'Cita: franja'],
+  ['motivo', 'Motivo'], ['fecha_recontacto', 'Recontactar'], ['premio_ruleta', 'Premio ruleta'],
+  ['prioridad', 'Prioridad'], ['prioridad_motivo', 'Motivo de la prioridad'],
 ];
 
 async function copiarTexto(texto, aviso) {
@@ -1588,6 +1620,7 @@ async function loadDetail(leadId) {
           </div>
           <div class="detail-badges">
             ${l.qualified ? '<span class="badge badge-green">Calificado</span>' : '<span class="badge badge-gray">No calificado</span>'}
+            ${prioridadBadge(l)}${l.opt_out ? '<span class="badge badge-red" title="Pidió que no le escriban">No escribir</span>' : ''}
             ${tagBadges(tagsOf(l)).replace('<span class="cell-muted">—</span>', '')}
           </div>
         </div>
@@ -1631,7 +1664,7 @@ async function loadDetail(leadId) {
       </div>
       <div class="panel conv-panel">
         <div class="panel-title">Conversación${l.message_count ? `<span class="hint">${l.message_count} mensajes</span>` : ''}</div>
-        ${renderTranscript(l.transcript)}
+        ${renderTranscript(l.transcript_ts || l.transcript)}
       </div>
     </div>`;
 }
@@ -1914,7 +1947,7 @@ async function loadTagPanel(leadId) {
       <span class="row">${avatar(nombre, 'avatar-sm', l.lead_id)}${esc(nombre || '+' + l.lead_id)}</span>
       <a href="#detail/${esc(l.lead_id)}" class="hint" title="Abrir el detalle"><code>+${esc(l.lead_id)}</code></a>
     </div>
-    ${renderTranscript(l.transcript)}
+    ${renderTranscript(l.transcript_ts || l.transcript)}
     <div class="panel-title" style="margin-top:18px">¿Cuál fue el resultado?</div>
     ${tagPicker(l.lead_id, tagsOf(l), 'tag')}
     <div class="tag-panel-foot">

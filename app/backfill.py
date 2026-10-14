@@ -206,6 +206,55 @@ def cw_messages(conv_id: int) -> list[dict]:
     return msgs
 
 
+LOCAL_TZ = os.getenv("LOCAL_TZ", "America/Lima")
+
+# sender.id del bot detectado en la ultima pasada completa. La pasada corta de la feria trae
+# pocas conversaciones y ahi el conteo puede equivocarse si un humano escribio mas que el bot.
+_bot_id_detectado: Any = None
+
+
+def transcript_con_hora(messages: list[dict], bot_id: Any) -> str:
+    """La misma conversacion que transcript_from_chatwoot, con la hora de Lima en cada linea.
+
+    Va a la columna transcript_ts, que solo lee el dashboard. No reemplaza a `transcript`: de
+    ese texto sale la huella que decide si hay que volver a extraer con Claude, y cambiarle el
+    formato haria re-extraer (y pagar) todos los leads de una vez.
+    """
+    from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    try:
+        zona = ZoneInfo(LOCAL_TZ)
+    except (ZoneInfoNotFoundError, KeyError, ValueError):
+        zona = timezone(timedelta(hours=-5))   # Lima, sin horario de verano
+    lines: list[str] = []
+    for m in sorted(messages, key=lambda x: x.get("id", 0)):
+        if m.get("private"):
+            continue
+        mt = m.get("message_type")
+        content = (m.get("content") or "").strip()
+        if not content or mt == 2:
+            continue
+        if mt == 0:
+            speaker = "LEAD"
+        else:
+            sid = (m.get("sender") or {}).get("id")
+            speaker = "BOT" if bot_id is not None and sid == bot_id else "AGENTE"
+        ts = m.get("created_at")
+        hora = datetime.fromtimestamp(ts, zona).strftime("%d/%m %H:%M") if isinstance(ts, (int, float)) else "--/-- --:--"
+        lines.append(f"[{hora}] {speaker}: {content}")
+    return "\n".join(lines)
+
+
+async def guardar_transcript_ts(conn: asyncpg.Connection, lead_id: str, texto: str) -> bool:
+    """Escribe la conversacion con hora. No toca updated_at: no es actividad del lead."""
+    r = await conn.execute(
+        "UPDATE leads_dataset SET transcript_ts = $2 "
+        "WHERE lead_id = $1 AND transcript_ts IS DISTINCT FROM $2",
+        lead_id, texto,
+    )
+    return r != "UPDATE 0"
+
+
 def transcript_from_chatwoot(messages: list[dict], bot_id: Any) -> tuple[str, int, int, bool]:
     """Reconstruye (texto, total_mensajes, turnos_humanos_sustantivos, hubo_humano).
 
@@ -497,6 +546,8 @@ async def run_chatwoot(args, conn, client, c) -> None:
 
     bot_id = os.getenv("CHATWOOT_BOT_AGENT_ID")
     bot_id = int(bot_id) if bot_id else (max(tally, key=tally.get) if tally else None)
+    global _bot_id_detectado
+    _bot_id_detectado = bot_id
 
     print(f"Contactos (telefonos) en inbox {CHATWOOT_INBOX}: {len(by_phone)}  "
           f"| bot sender.id detectado: {bot_id}  "
@@ -511,6 +562,12 @@ async def run_chatwoot(args, conn, client, c) -> None:
         transcript, total, substantive, hubo_humano = transcript_from_chatwoot(msgs, bot_id)
         if hubo_humano:
             c["humano"] = c.get("humano", 0) + 1
+        # La conversacion con hora se guarda para TODOS los leads con al menos un mensaje,
+        # tambien los que el filtro de turnos sustantivos deja sin extraer: es lo que el
+        # dashboard muestra, y no cuesta ninguna llamada a Claude.
+        if not args.dry_run and any(m.get("message_type") == 0 for m in msgs):
+            if await guardar_transcript_ts(conn, phone, transcript_con_hora(msgs, bot_id)):
+                c["con_hora"] = c.get("con_hora", 0) + 1
         # Fecha del primer mensaje (epoch): solo se usa si el lead aun no existe en la tabla.
         stamps = [m["created_at"] for m in msgs if isinstance(m.get("created_at"), (int, float))]
         await process_one(args, conn, client, phone, transcript, total, substantive, c,
@@ -609,6 +666,55 @@ async def run(args: argparse.Namespace) -> None:
                 await registrar_pasada(conn, getattr(args, "origen", "cli"), c, fallo)
             except Exception as e:  # noqa: BLE001 — anotar no puede tumbar la pasada
                 print(f"[registro] no se pudo anotar la pasada: {e}", flush=True)
+        await conn.close()
+
+
+async def actualizar_transcripts_pbf() -> dict:
+    """Pasada corta para la feria PBF 2026: solo la conversacion con hora de sus leads.
+
+    John revisa el dashboard a las 12:00 y a las 18:00, y la pasada completa corre una vez al
+    dia. Esta trae de Chatwoot solo las conversaciones de los leads con `origen` (los que
+    marco el bot de la feria) y no llama a Claude: no extrae nada, solo copia el texto.
+    """
+    conn = await asyncpg.connect(
+        host=os.getenv("DB_HOST", "postgres"),
+        port=int(os.getenv("DB_PORT", "5432")),
+        database=os.getenv("DB_NAME", "n8n"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+    )
+    r = {"leads": 0, "actualizados": 0, "errores": 0}
+    try:
+        pbf = {x["lead_id"] for x in await conn.fetch(
+            "SELECT lead_id FROM leads_dataset WHERE origen IS NOT NULL")}
+        r["leads"] = len(pbf)
+        if not pbf or not CHATWOOT_TOKEN:
+            return r
+        env_bot = os.getenv("CHATWOOT_BOT_AGENT_ID")
+        bot_id = int(env_bot) if env_bot else _bot_id_detectado
+        # Un lead puede tener varias conversaciones: se juntan, igual que en la pasada completa.
+        por_telefono: dict[str, list[int]] = {}
+        for cv in cw_list_conversations():
+            if cv.get("inbox_id") != CHATWOOT_INBOX:
+                continue
+            sender = (cv.get("meta") or {}).get("sender") or {}
+            phone = (sender.get("phone_number") or "").replace("+", "").strip()
+            if phone in pbf:
+                por_telefono.setdefault(phone, []).append(cv["id"])
+        for phone, conv_ids in por_telefono.items():
+            try:
+                msgs = [m for cid in conv_ids for m in cw_messages(cid)]
+                if bot_id is None:
+                    salientes = [(m.get("sender") or {}).get("id") for m in msgs
+                                 if m.get("message_type") == 1 and not m.get("private")]
+                    bot_id = max(set(salientes), key=salientes.count) if salientes else None
+                if await guardar_transcript_ts(conn, phone, transcript_con_hora(msgs, bot_id)):
+                    r["actualizados"] += 1
+            except Exception as e:  # noqa: BLE001 — una conversacion no tumba las demas
+                print(f"[pbf-transcripts] {phone}: {e}", flush=True)
+                r["errores"] += 1
+        return r
+    finally:
         await conn.close()
 
 

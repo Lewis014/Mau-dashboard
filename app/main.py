@@ -367,6 +367,45 @@ async def _tareas_diarias():
             print(f"[alertas] fallo: {e}", flush=True)
 
 
+async def _tareas_frecuentes():
+    """Cada 5 minutos: avisa los leads urgentes de la feria PBF 2026; cada 30, refresca sus
+    conversaciones con hora.
+
+    Va aparte de la pasada diaria porque un urgente (pidio cita y hay que confirmarle la hora
+    en 2 horas) no puede esperar a las 07:00 del dia siguiente. Las conversaciones se traen sin
+    Claude, asi que correr esto seguido no cuesta API.
+    """
+    from app.alertas import revisar_urgentes
+    from app.backfill import actualizar_transcripts_pbf
+
+    vuelta = 0
+    while True:
+        await asyncio.sleep(300)
+        vuelta += 1
+        try:
+            async with db.get_pool().acquire() as conn:
+                u = await revisar_urgentes(conn)
+            if u["enviadas"] or u["fallos"]:
+                print(f"[urgentes] enviadas={u['enviadas']} de {u['urgentes']} | fallos={u['fallos']}", flush=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 — columna aun sin crear, SMTP caido...
+            print(f"[urgentes] fallo: {e}", flush=True)
+
+        if vuelta % 6 == 0 and CHATWOOT_API_TOKEN_DISPONIBLE:
+            try:
+                t = await _en_hilo(actualizar_transcripts_pbf)
+                if t["actualizados"] or t["errores"]:
+                    print(f"[pbf-transcripts] {t}", flush=True)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001 — Chatwoot caido...
+                print(f"[pbf-transcripts] fallo: {e}", flush=True)
+
+
+CHATWOOT_API_TOKEN_DISPONIBLE = bool(os.getenv("CHATWOOT_API_TOKEN"))
+
+
 def primary_outcome(tags: list[str]) -> str:
     """Estado principal derivado de las etiquetas (el mas avanzado del embudo).
 
@@ -681,6 +720,29 @@ async def lifespan(app: FastAPI):
         """
     )
 
+    # Feria PBF 2026. Las escribe el bot (migration_pbf2026.sql en contatech-aegis); se crean
+    # tambien aqui, solo las que lee el dashboard, para que la app arranque aunque la
+    # migracion del bot todavia no haya corrido.
+    await pool.execute(
+        """
+        ALTER TABLE leads_dataset
+          ADD COLUMN IF NOT EXISTS origen           text,
+          ADD COLUMN IF NOT EXISTS color            text,
+          ADD COLUMN IF NOT EXISTS perfil           text,
+          ADD COLUMN IF NOT EXISTS num_ruc_rango    text,
+          ADD COLUMN IF NOT EXISTS consentimiento   text,
+          ADD COLUMN IF NOT EXISTS estado_pbf       text,
+          ADD COLUMN IF NOT EXISTS oferta           text,
+          ADD COLUMN IF NOT EXISTS cita_dia         text,
+          ADD COLUMN IF NOT EXISTS cita_franja      text,
+          ADD COLUMN IF NOT EXISTS opt_out          boolean NOT NULL DEFAULT false,
+          ADD COLUMN IF NOT EXISTS prioridad        text,
+          ADD COLUMN IF NOT EXISTS prioridad_motivo text,
+          ADD COLUMN IF NOT EXISTS prioridad_at     timestamptz,
+          ADD COLUMN IF NOT EXISTS transcript_ts    text
+        """
+    )
+
     # Historial de repartos (app/reparto.py). Existe por dos razones. Una: el cursor de
     # rotacion de la serpiente — que vendedor abrio el ultimo lote — sale de aqui, asi que
     # no hace falta una tabla de ajustes. Dos: la etiqueta de responsable dice quien lleva
@@ -789,6 +851,9 @@ async def lifespan(app: FastAPI):
     else:
         print("[diario] desactivado (SYNC_PLANES_HORA=-1)", flush=True)
 
+    tarea_frecuente = asyncio.create_task(_tareas_frecuentes())
+    print("[frecuente] cada 5 min: urgentes de la feria por correo; cada 30: sus conversaciones", flush=True)
+
     # Quien entra en el reparto, dicho en voz alta al arrancar: un nombre mal escrito aqui
     # deja a esa persona sin su parte del lote y no lo notaria nadie hasta contar los leads.
     equipo = equipo_reparto()
@@ -808,6 +873,7 @@ async def lifespan(app: FastAPI):
 
     if tarea_sync:
         tarea_sync.cancel()
+    tarea_frecuente.cancel()
     await db.close_pool()
 
 
@@ -946,7 +1012,14 @@ async def robots():
 ORDER_BY = {
     "recientes": "captured_at DESC",
     "score": "conversion_prob DESC NULLS LAST, captured_at DESC",
+    # Lo que John tiene que atender primero en sus revisiones de las 12:00 y las 18:00.
+    "prioridad": ("CASE prioridad WHEN 'urgente' THEN 0 WHEN 'alta' THEN 1 WHEN 'media' THEN 2 "
+                  "WHEN 'baja' THEN 3 ELSE 4 END, prioridad_at DESC NULLS LAST, captured_at DESC"),
 }
+
+# Prioridades que escribe el bot de la feria PBF 2026 (v4 §12). No son etiquetas: las de
+# estado generan eventos del Scoreboard, y una alerta no es un hito del embudo.
+PRIORIDADES = ("urgente", "alta", "media", "baja")
 
 
 def _dia_iso(raw: str) -> date:
@@ -1157,6 +1230,7 @@ def _filtros_leads(
     plan_estado: Optional[str], outcome: Optional[str], qualified: Optional[str],
     has_transcript: Optional[str], seguimiento: Optional[str],
     desde: Optional[str], hasta: Optional[str],
+    prioridad: Optional[str] = None, campana: Optional[str] = None,
 ) -> tuple[str, list]:
     """Traduce los filtros de la barra a un WHERE con sus argumentos.
 
@@ -1189,6 +1263,13 @@ def _filtros_leads(
         args.append(qualified == "true")
     if has_transcript == "true":
         conditions.append("transcript IS NOT NULL")
+    if prioridad in PRIORIDADES:
+        conditions.append(f"prioridad = ${len(args) + 1}")
+        args.append(prioridad)
+    elif prioridad == "con":
+        conditions.append("prioridad IS NOT NULL")
+    if campana == "pbf":   # origen solo lo escribe el bot de la feria
+        conditions.append("origen IS NOT NULL")
     _busqueda(q, conditions, args)
     _seguimiento(seguimiento, conditions, args)
     # Buscar IGNORA el rango de fechas. Que un telefono no aparezca porque el dashboard
@@ -1211,6 +1292,8 @@ async def list_leads(
     seguimiento: Optional[str] = Query(None, description="vencido | hoy | semana | sin_definir"),
     desde: Optional[str] = Query(None),
     hasta: Optional[str] = Query(None),
+    prioridad: Optional[str] = Query(None, description="urgente | alta | media | baja | con"),
+    campana: Optional[str] = Query(None, description="pbf = leads de la feria PBF 2026"),
     sort: str = Query("recientes"),
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
@@ -1218,7 +1301,8 @@ async def list_leads(
 ):
     pool = db.get_pool()
     where, args = _filtros_leads(q, tags, sin_etiquetas, plan_estado, outcome,
-                                 qualified, has_transcript, seguimiento, desde, hasta)
+                                 qualified, has_transcript, seguimiento, desde, hasta,
+                                 prioridad, campana)
     order_by = ORDER_BY.get(sort, ORDER_BY["recientes"])
 
     total = await pool.fetchval(f"SELECT COUNT(*) FROM leads_dataset {where}", *args)
@@ -1236,6 +1320,8 @@ async def list_leads(
         # No mandamos el transcript completo al navegador; solo si existe (para decidir si es puntuable).
         d["has_transcript"] = bool(d.get("transcript"))
         d.pop("transcript", None)
+        d.pop("transcript_ts", None)
+        d.pop("pbf_datos", None)
         items.append(d)
 
     return {"total": total, "items": items}
@@ -1266,6 +1352,18 @@ EXPORT_COLUMNAS: list[tuple[str, str, str]] = [
     ("canal",                "canal",                "texto"),
     ("mensajes",             "message_count",        "texto"),
     ("fecha_captura",        "captured_at",          "fecha_hora_local"),
+    # Feria PBF 2026 (v4 §13). Vacias en los leads que no vienen de la feria.
+    ("pbf_origen",           "origen",               "texto"),
+    ("pbf_semaforo",         "color",                "texto"),
+    ("pbf_perfil",           "perfil",               "texto"),
+    ("pbf_rucs",             "num_ruc_rango",        "texto"),
+    ("pbf_consentimiento",   "consentimiento",       "texto"),
+    ("pbf_estado",           "estado_pbf",           "texto"),
+    ("pbf_cita",             "cita_dia",             "texto"),
+    ("pbf_franja",           "cita_franja",          "texto"),
+    ("prioridad",            "prioridad",            "texto"),
+    ("prioridad_motivo",     "prioridad_motivo",     "texto"),
+    ("no_escribir",          "opt_out",              "si_no"),
 ]
 
 
@@ -1316,6 +1414,8 @@ async def export_leads_csv(
     seguimiento: Optional[str] = Query(None),
     desde: Optional[str] = Query(None),
     hasta: Optional[str] = Query(None),
+    prioridad: Optional[str] = Query(None),
+    campana: Optional[str] = Query(None),
     sort: str = Query("recientes"),
     _=Depends(check_auth),
 ):
@@ -1330,7 +1430,8 @@ async def export_leads_csv(
     termine para empezar a recibir.
     """
     where, args = _filtros_leads(q, tags, sin_etiquetas, plan_estado, outcome,
-                                 qualified, has_transcript, seguimiento, desde, hasta)
+                                 qualified, has_transcript, seguimiento, desde, hasta,
+                                 prioridad, campana)
     columnas = ", ".join(col for _, col, _f in EXPORT_COLUMNAS)
     sql = (f"SELECT {columnas} FROM leads_dataset {where} "
            f"ORDER BY {ORDER_BY.get(sort, ORDER_BY['recientes'])}")

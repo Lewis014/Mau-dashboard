@@ -604,3 +604,100 @@ async def revisar_fuente(conn: asyncpg.Connection) -> dict:
     r["enviada"] = True
     r["resumen"] = f"{TIPOS_SISTEMA[tipo]} — avisado a {', '.join(ALERTAS_TECNICO_CORREOS)}"
     return r
+
+
+# ── Leads urgentes de la feria PBF 2026 ──────────────────────────────────────
+#
+# El bot de la feria marca prioridad='urgente' cuando un lead pide cita por dia y franja
+# (todavia no hay Calendly de 30 minutos). Alguien tiene que confirmarle la hora exacta en
+# 2 horas habiles (v4 §7), y John solo mira el dashboard a las 12:00 y a las 18:00: con eso
+# solo, un lead que agenda a las 12:30 esperaria hasta la tarde. Por eso el urgente sale por
+# correo apenas aparece, sin esperar a la pasada diaria. El resto de prioridades se queda en
+# el dashboard.
+
+URGENTES_DUENO = os.getenv("ALERTAS_URGENTES_DUENO", "jhon").strip().lower()
+
+SQL_URGENTES = """
+SELECT lead_id, contact_name, wa_display_name, company_name, perfil, num_ruc_rango, num_rucs,
+       origen, color, oferta, cita_dia, cita_franja, prioridad_motivo, prioridad_at, is_test
+  FROM leads_dataset
+ WHERE prioridad = 'urgente'
+   AND prioridad_at > NOW() - INTERVAL '2 days'
+"""
+
+MOTIVOS_URGENTES = {"confirmar_hora": "Pidió cita: confirmarle la hora exacta y mandarle el enlace"}
+
+
+def _datos_urgente(r: asyncpg.Record) -> dict:
+    rucs = r["num_rucs"] or r["num_ruc_rango"]
+    return {
+        "lead_id": r["lead_id"],
+        "tipo": "lead_urgente",
+        # La clave es el momento en que se marco: si el mismo lead vuelve a pedir cita,
+        # es un aviso nuevo; si no, no se repite en cada vuelta del bucle.
+        "fecha": r["prioridad_at"].isoformat(),
+        "telefono": f"+{r['lead_id']}",
+        "nombre": _nombre(r),
+        "empresa": r["company_name"],
+        "que": MOTIVOS_URGENTES.get(r["prioridad_motivo"], r["prioridad_motivo"] or "Urgente"),
+        "cita": " · ".join(x for x in (r["oferta"], r["cita_dia"], r["cita_franja"]) if x),
+        "ficha": " · ".join(x for x in (r["perfil"], f"{rucs} RUCs" if rucs else None,
+                                       f"Semáforo {r['color']}" if r["color"] else None,
+                                       f"origen {r['origen']}" if r["origen"] else None) if x),
+        "prueba": bool(r["is_test"]),
+        "url": f"{DASHBOARD_URL}/#detail/{r['lead_id']}" if DASHBOARD_URL else None,
+    }
+
+
+def _texto_urgente(a: dict) -> tuple[str, str, str]:
+    marca = "[PRUEBA] " if a["prueba"] else ""
+    asunto = f"{marca}MAU · URGENTE · {a['nombre']} pidió cita"
+    lineas = [f"{a['que']} (plazo: 2 horas hábiles).", "",
+              f"{a['nombre']}" + (f" — {a['empresa']}" if a["empresa"] else ""),
+              f"WhatsApp: {a['telefono']}"]
+    if a["cita"]:
+        lineas.append(f"Pidió: {a['cita']}")
+    if a["ficha"]:
+        lineas.append(a["ficha"])
+    if a["url"]:
+        lineas += ["", a["url"]]
+    lineas += ["", "--", "Aviso automático del bot de la feria PBF 2026. Llega en cuanto el lead pide la cita."]
+    texto = "\n".join(lineas)
+    html = (
+        '<div style="max-width:600px;margin:0 auto;padding:24px;background:#ffffff">'
+        '<div style="font:800 20px Georgia,serif;color:#1e3a8a">MAU</div>'
+        '<p style="font:600 15px/1.5 Arial,sans-serif;color:#dc2626;margin:16px 0 8px">'
+        f'{_esc(a["que"])} (plazo: 2 horas hábiles).</p>'
+        '<div style="border-left:3px solid #dc2626;padding:2px 0 2px 12px">'
+        f'<div style="font:600 15px/1.4 Arial,sans-serif;color:#1e293b">{_esc(a["nombre"])}'
+        + (f' · {_esc(a["empresa"])}' if a["empresa"] else "") + '</div>'
+        f'<div style="font:13px/1.5 Arial,sans-serif;color:#64748b">{_esc(a["telefono"])}</div>'
+        + (f'<div style="font:14px/1.5 Arial,sans-serif;color:#1e293b">Pidió: {_esc(a["cita"])}</div>' if a["cita"] else "")
+        + (f'<div style="font:13px/1.5 Arial,sans-serif;color:#475569">{_esc(a["ficha"])}</div>' if a["ficha"] else "")
+        + (f'<div style="margin-top:6px"><a href="{_esc(a["url"])}" style="font:13px Arial,sans-serif;'
+           f'color:#2563eb">Abrir en el dashboard</a></div>' if a["url"] else "")
+        + '</div></div>'
+    )
+    return asunto, texto, html
+
+
+async def revisar_urgentes(conn: asyncpg.Connection) -> dict:
+    """Avisa por correo los leads urgentes nuevos. Idempotente: corre cada pocos minutos."""
+    filas = await conn.fetch(SQL_URGENTES)
+    r = {"urgentes": len(filas), "enviadas": 0, "fallos": []}
+    if not filas:
+        return r
+    destinos = correos_de(URGENTES_DUENO)
+    if not (correo.configurado() and destinos):
+        # Sin canal no se reserva nada: el aviso queda pendiente para cuando lo haya.
+        r["fallos"].append(f"sin correo para {URGENTES_DUENO} (ALERTAS_CORREOS / MAIL_*)")
+        return r
+    for a in await _reservar(conn, [_datos_urgente(f) for f in filas]):
+        asunto, texto, html = _texto_urgente(a)
+        try:
+            await asyncio.to_thread(correo.enviar, destinos, asunto, texto, html)
+            r["enviadas"] += 1
+        except Exception as e:  # noqa: BLE001 — SMTP caido, red...
+            await _soltar(conn, [a])
+            r["fallos"].append(f"{a['lead_id']}: {e}")
+    return r
